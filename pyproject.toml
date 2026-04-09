@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "liftosaur2garmin"
+version = "0.1.2"
+description = "Sync Liftosaur workouts to Garmin Connect with FIT file generation and upload support"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Konstantinos Georgiou", email = "delfinas7kostas@gmail.com" }]
+keywords = ["liftosaur", "garmin", "fitness", "workout", "sync", "fit-file", "strength-training"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "garmin-auth>=0.2.1",
+    "garminconnect>=0.2.38,<0.3.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "fit-tool>=0.9.15",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "psycopg2-binary>=2.9",
+    "pynacl>=1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-mock>=3.12"]
+cloud = ["psycopg2-binary>=2.9", "pynacl>=1.5"]
+
+[project.scripts]
+liftosaur2garmin = "liftosaur2garmin.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/drkostas/liftosaur2garmin"
+Repository = "https://github.com/drkostas/liftosaur2garmin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/liftosaur2garmin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
