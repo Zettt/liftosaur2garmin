@@ -538,10 +538,20 @@ class GarminAuthSession:
         self.di_client_id = self._extract_client_id_from_jwt(self.di_token) or self.di_client_id
 
     def _load_profile(self) -> None:
-        profile = self.request("GET", "/userprofile-service/userprofile/profile").json()
-        if isinstance(profile, dict):
-            self.display_name = profile.get("displayName")
-            self.full_name = profile.get("fullName")
+        for path in ("/userprofile-service/socialProfile", "/userprofile-service/userprofile/user-settings"):
+            try:
+                profile = self.request("GET", path).json()
+                if isinstance(profile, dict):
+                    if "userData" in profile:
+                        self.display_name = profile["userData"].get("displayName", self.display_name)
+                        self.full_name = profile["userData"].get("fullName", self.full_name)
+                    else:
+                        self.display_name = profile.get("displayName", self.display_name)
+                        self.full_name = profile.get("fullName", self.full_name)
+                if self.display_name:
+                    break
+            except Exception as e:
+                logger.debug("Could not load profile from %s: %s", path, e)
 
     def _api_headers(self) -> dict[str, str]:
         if self.di_token:
