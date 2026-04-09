@@ -62,6 +62,7 @@ _last_sync_time: datetime | None = None
 _unmapped_cache: list[tuple[str, int]] | None = None
 _unmapped_cache_time: float = 0
 _failed_ids: set[str] = set()  # Workouts that failed upload this session (retried next session)
+_VALID_AUTOSYNC_INTERVALS = (30, 60, 120, 240, 360, 720, 1440)
 
 
 def _acquire_sync_lock() -> bool:
@@ -195,6 +196,17 @@ def _stop_autosync() -> None:
         if _autosync_timer is not None:
             _autosync_timer.cancel()
             _autosync_timer = None
+
+
+def _parse_autosync_interval(raw: Any, default: int = 120) -> int:
+    """Parse the posted auto-sync interval and clamp to known values."""
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if interval not in _VALID_AUTOSYNC_INTERVALS:
+        return default
+    return interval
 
 
 def _record_sync_log(result: dict, trigger: str = "manual") -> None:
@@ -1083,9 +1095,7 @@ async def api_toggle_autosync(request: Request):
     form = await request.form()
     enabled_raw = form.get("enabled", "false")
     enabled = enabled_raw in ("true", "True", "1", True)
-    interval = int(form.get("interval", 120))
-    if interval not in (30, 60, 120, 240, 360, 720, 1440):
-        interval = 120
+    interval = _parse_autosync_interval(form.get("interval", 120))
 
     config = load_config()
     config.setdefault("auto_sync", {})
