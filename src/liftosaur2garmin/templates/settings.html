@@ -59,16 +59,36 @@
                 Open Liftosaur, then go to Settings &rarr; API Keys to create or rotate a key.
             </div>
         </div>
-        <div class="form-grid">
-            <div class="form-group">
-                <label class="form-label" for="garmin_email">Garmin Email</label>
-                <input class="form-input" type="email" id="garmin_email" name="garmin_email" value="{{ config.get('garmin_email', '') }}">
-            </div>
-            <div class="form-group">
-                <label class="form-label" for="garmin_password">Garmin Password</label>
-                <input class="form-input" type="password" id="garmin_password" name="garmin_password" placeholder="Leave blank to keep current">
-            </div>
+        <div class="form-group">
+            <label class="form-label" for="garmin_email">Garmin Email</label>
+            <input class="form-input" type="email" id="garmin_email" name="garmin_email" value="{{ config.get('garmin_email', '') }}">
         </div>
+        <div class="form-hint" style="line-height: 1.7;">
+            Garmin status:
+            {% if garmin_connected %}
+            <strong style="color: var(--accent);">connected</strong>
+            {% else %}
+            <strong style="color: var(--amber);">not connected</strong>
+            {% endif %}
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+            <a href="/setup" class="btn btn-secondary btn-sm">
+                {% if garmin_connected %}Reconnect Garmin{% else %}Connect Garmin{% endif %}
+            </a>
+            {% if not is_cloud and garmin_connected %}
+            <a href="/api/garmin/export-token-file" class="btn btn-secondary btn-sm">Download Garmin Token File</a>
+            {% endif %}
+        </div>
+        {% if is_cloud %}
+        <div class="form-group" style="margin-top: 16px;">
+            <label class="form-label" for="settings_garmin_token_file">Replace Garmin Token File</label>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <input class="form-input" type="file" id="settings_garmin_token_file" accept=".json,application/json" style="flex: 1;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="replaceGarminTokenFile()">Upload</button>
+            </div>
+            <div id="settings-garmin-import-result" style="margin-top: 6px;"></div>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Profile Section -->
@@ -204,12 +224,36 @@
         <span class="card-title">Unmapped Exercises ({{ unmapped|length }})</span>
     </div>
     <div class="form-hint" style="margin-bottom: 12px;">These show as "Unknown" in Garmin. Use <code>liftosaur2garmin map</code> to fix.</div>
-    {% for name, count in unmapped %}
+{% for name, count in unmapped %}
     <div class="list-item">
         <span style="font-size: 14px;">{{ name }} <span style="color: var(--text-muted); font-size: 12px;">({{ count }}x)</span></span>
         <span class="badge badge-pending">unmapped</span>
     </div>
     {% endfor %}
 </div>
+{% endif %}
+{% if is_cloud %}
+<script>
+async function replaceGarminTokenFile() {
+    const fileInput = document.getElementById('settings_garmin_token_file');
+    const email = document.getElementById('garmin_email').value.trim();
+    const result = document.getElementById('settings-garmin-import-result');
+    if (!fileInput.files.length) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Choose a token file first.</span>';
+        return;
+    }
+    const formData = new FormData();
+    formData.append('token_file', fileInput.files[0]);
+    formData.append('garmin_email', email);
+    result.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Uploading token file...</span>';
+    const response = await fetch('/api/garmin/import-token-file', { method: 'POST', body: formData });
+    const data = await response.json();
+    if (!response.ok) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">' + (data.error || 'Upload failed') + '</span>';
+        return;
+    }
+    result.innerHTML = '<span style="font-size: 12px; color: var(--accent);">&#10003; Garmin token file replaced.</span>';
+}
+</script>
 {% endif %}
 {% endblock %}

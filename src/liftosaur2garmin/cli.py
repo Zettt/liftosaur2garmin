@@ -6,6 +6,7 @@ import argparse
 import getpass
 import logging
 import sys
+from pathlib import Path
 
 from liftosaur2garmin import db
 from liftosaur2garmin.config import is_configured, load_config, save_config
@@ -53,20 +54,26 @@ def cmd_init(args: argparse.Namespace) -> None:
     email = input(f"Garmin email{email_display}: ").strip() or current_email
     config["garmin_email"] = email
 
-    # Garmin password (optional — can use saved tokens)
     if email:
-        pw = getpass.getpass("Garmin password (enter to skip if tokens exist): ")
+        pw = getpass.getpass("Garmin password (enter to skip if tokens already exist): ")
         if pw:
-            # Test login
-            print("  Checking Garmin login...", end=" ", flush=True)
+            print("  Connecting Garmin...", end=" ", flush=True)
             try:
-                from garmin_auth import GarminAuth
-                auth = GarminAuth(email=email, password=pw)
-                client = auth.login()
-                print(f"✓ Authenticated as {client.display_name}")
+                from liftosaur2garmin.garmin import start_login, finish_login
+
+                token_dir = config.get("garmin_token_dir", "~/.garminconnect")
+                result = start_login(email, pw, token_dir=token_dir)
+                
+                if result.get("status") == "needs_mfa":
+                    print("\n  A verification code is required.")
+                    mfa_code = input("  MFA code: ").strip()
+                    result = finish_login(mfa_code, result["state"], email, token_dir=token_dir)
+
+                display_name = result.get("display_name") or email
+                print(f"✓ Connected as {display_name}")
             except Exception as e:
                 print(f"✗ Failed: {e}")
-                print("  You can fix this later. Continuing setup...")
+                print("  You can reconnect later from liftosaur2garmin serve.")
 
     # User profile
     print("\nUser profile (for calorie estimation):")
@@ -85,6 +92,23 @@ def cmd_init(args: argparse.Namespace) -> None:
     save_config(config)
     print(f"\n✓ Setup complete. Config saved to ~/.liftosaur2garmin/config.json")
     print(f"  Run: liftosaur2garmin sync")
+
+
+def cmd_export_garmin_token(args: argparse.Namespace) -> None:
+    """Print the local Garmin token file path."""
+    config = load_config()
+    from liftosaur2garmin.garmin import token_file_path
+
+    path = token_file_path(config.get("garmin_token_dir", "~/.garminconnect"))
+    if not path.exists():
+        print("✗ No Garmin token file found. Connect Garmin first.")
+        sys.exit(1)
+    if args.output:
+        target = Path(args.output).expanduser()
+        target.write_text(path.read_text())
+        print(f"✓ Exported Garmin token file to {target}")
+        return
+    print(path)
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
@@ -276,6 +300,9 @@ def main() -> None:
     serve_parser.add_argument("-p", "--port", type=int, default=8123, help="Port (default: 8123)")
     serve_parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
 
+    export_parser = subparsers.add_parser("export-garmin-token", help="Print or copy the local Garmin token file")
+    export_parser.add_argument("--output", help="Optional path to write a copy of the token file")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -299,6 +326,7 @@ def main() -> None:
             "unmapped": cmd_unmapped,
             "map": cmd_map,
             "unsync": cmd_unsync,
+            "export-garmin-token": cmd_export_garmin_token,
         }
         commands[args.command](args)
     except RuntimeError as e:

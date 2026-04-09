@@ -114,3 +114,39 @@ class TestIsConfigured:
 
         with patch("liftosaur2garmin.config.CONFIG_FILE", config_file):
             assert is_configured() is False
+
+    def test_cloud_requires_garmin_tokens(self, tmp_path: Path, monkeypatch) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"hevy_api_key": "some-key"}))
+        monkeypatch.setenv("DATABASE_URL", "postgres://example")
+
+        class FakeCursor:
+            def execute(self, query: str) -> None:
+                self.query = query
+
+            def fetchone(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeConn:
+            def cursor(self):
+                return FakeCursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeDb:
+            def _get_conn(self):
+                return FakeConn()
+
+        with patch("liftosaur2garmin.config.CONFIG_FILE", config_file), \
+             patch("liftosaur2garmin.db.get_db", return_value=FakeDb()):
+            assert is_configured() is False

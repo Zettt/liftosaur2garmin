@@ -12,8 +12,6 @@ import logging
 import time as _time
 from datetime import datetime, timedelta
 
-from garminconnect import Garmin
-
 logger = logging.getLogger("liftosaur2garmin")
 
 # Cache to avoid hammering Garmin API on every page load
@@ -29,7 +27,7 @@ MATCHED_COUNT_TTL = 600  # 10 minutes
 STRENGTH_TYPES = {"strength_training", "indoor_cardio"}
 
 
-def fetch_garmin_activities(client: Garmin, count: int = 1000) -> list[dict]:
+def fetch_garmin_activities(client, count: int = 1000) -> list[dict]:
     """Fetch recent Garmin activities with caching."""
     global _garmin_activities_cache, _cache_count, _cache_timestamp
 
@@ -42,7 +40,7 @@ def fetch_garmin_activities(client: Garmin, count: int = 1000) -> list[dict]:
         return _garmin_activities_cache  # type: ignore[return-value]
 
     try:
-        from garmin_auth import RateLimiter
+        from liftosaur2garmin.garmin import RateLimiter
         limiter = RateLimiter(delay=1.0)
         activities = limiter.call(client.get_activities, 0, count)
         _garmin_activities_cache = activities
