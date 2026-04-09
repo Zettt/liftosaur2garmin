@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
@@ -385,6 +385,8 @@ async def setup_save(
         config["hevy_api_key"] = hevy_api_key
     if garmin_email:
         config["garmin_email"] = garmin_email
+    if garmin_password:
+        config["garmin_password"] = garmin_password
     config["user_profile"]["weight_kg"] = weight_kg
     config["user_profile"]["birth_year"] = birth_year
     config["user_profile"]["sex"] = sex
@@ -461,42 +463,112 @@ async def setup_save(
 
 # ── Browser-based Garmin auth (ticket exchange) ───────────────────────────
 
+def _exchange_garmin_ticket(ticket: str) -> dict[str, dict]:
+    """Exchange a Garmin SSO ticket for OAuth tokens."""
+    import requests as req
+    from urllib.parse import parse_qs, quote
+
+    from garmin_auth.sso import (
+        API_BASE,
+        CONSUMER_URL,
+        SSO_BASE,
+        USER_AGENT,
+        _build_oauth1_header,
+        exchange_oauth1,
+    )
+
+    session = req.Session()
+    session.headers["User-Agent"] = USER_AGENT
+
+    consumer_resp = session.get(CONSUMER_URL, timeout=10)
+    consumer_resp.raise_for_status()
+    consumer = consumer_resp.json()
+    consumer_key = consumer["consumer_key"]
+    consumer_secret = consumer["consumer_secret"]
+
+    preauth_url = (
+        f"{API_BASE}/oauth-service/oauth/preauthorized"
+        f"?ticket={quote(ticket)}"
+        f"&login-url={quote(f'{SSO_BASE}/embed')}"
+        f"&accepts-mfa-tokens=true"
+    )
+    preauth_header = _build_oauth1_header("GET", preauth_url, consumer_key, consumer_secret)
+    preauth_resp = session.get(
+        preauth_url,
+        headers={
+            "Authorization": preauth_header,
+            "User-Agent": "com.garmin.android.apps.connectmobile",
+        },
+        timeout=10,
+    )
+    if not preauth_resp.ok:
+        raise RuntimeError(
+            f"OAuth1 exchange failed ({preauth_resp.status_code}): "
+            f"{preauth_resp.text[:200]}"
+        )
+
+    preauth_data = parse_qs(preauth_resp.text)
+    oauth1 = {
+        "oauth_token": preauth_data.get("oauth_token", [""])[0],
+        "oauth_token_secret": preauth_data.get("oauth_token_secret", [""])[0],
+        "domain": "garmin.com",
+    }
+    if not oauth1["oauth_token"]:
+        raise RuntimeError("No OAuth1 token in Garmin response")
+
+    oauth2 = exchange_oauth1(oauth1, consumer_key, consumer_secret)
+    return {
+        "oauth1_token.json": oauth1,
+        "oauth2_token.json": oauth2,
+    }
+
+
+def _store_garmin_tokens(tokens: dict[str, dict]) -> None:
+    """Store Garmin OAuth tokens in the configured backend."""
+    database_url = db.get_database_url()
+    if database_url:
+        from garmin_auth.storage import DBTokenStore
+
+        store = DBTokenStore(database_url)
+        store.save(tokens)
+        return
+
+    from garmin_auth.storage import FileTokenStore
+
+    store = FileTokenStore()
+    store.save(tokens)
+
+
 @app.post("/api/garmin-ticket")
 async def garmin_ticket_store(request: Request):
-    """Store pre-exchanged Garmin OAuth tokens.
-
-    The token exchange happens via Cloudflare Worker (bypasses cloud IP blocks).
-    This endpoint just stores the resulting tokens in the DB/filesystem.
-    """
-    import json as _json
+    """Exchange or store Garmin OAuth tokens."""
     body = await request.json()
     tokens_data = body.get("tokens")
-    if not tokens_data or "oauth1" not in tokens_data or "oauth2" not in tokens_data:
-        return HTMLResponse(_json.dumps({"error": "Invalid tokens"}), status_code=400)
+    ticket = str(body.get("ticket", "")).strip()
 
-    try:
+    if tokens_data:
+        if "oauth1" not in tokens_data or "oauth2" not in tokens_data:
+            return JSONResponse({"error": "Invalid tokens"}, status_code=400)
         tokens = {
             "oauth1_token.json": tokens_data["oauth1"],
             "oauth2_token.json": tokens_data["oauth2"],
         }
-        database_url = db.get_database_url()
-        if database_url:
-            from garmin_auth.storage import DBTokenStore
-            store = DBTokenStore(database_url)
-            store.save(tokens)
-        else:
-            from garmin_auth.storage import FileTokenStore
-            store = FileTokenStore()
-            store.save(tokens)
+    elif ticket:
+        try:
+            tokens = _exchange_garmin_ticket(ticket)
+        except Exception as e:
+            logger.warning("Garmin ticket exchange failed: %s", e)
+            return JSONResponse({"error": str(e)[:200]}, status_code=500)
+    else:
+        return JSONResponse({"error": "Missing Garmin ticket or tokens"}, status_code=400)
 
+    try:
+        _store_garmin_tokens(tokens)
         logger.info("Garmin tokens stored successfully")
-        return HTMLResponse(_json.dumps({"ok": True}))
+        return JSONResponse({"ok": True})
     except Exception as e:
-        logger.warning("Garmin ticket exchange failed: %s", e)
-        return HTMLResponse(
-            _json.dumps({"error": str(e)[:200]}),
-            status_code=500,
-        )
+        logger.warning("Garmin token store failed: %s", e)
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
 
 
 @app.get("/workouts", response_class=HTMLResponse)

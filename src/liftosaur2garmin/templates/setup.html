@@ -16,13 +16,13 @@
             <span style="font-weight: 600; color: var(--blue, #3b82f6);">Sign into Garmin manually</span>
         </div>
         <p style="font-size: 13px; color: var(--text-secondary); margin-top: 6px;">
-            Automatic login isn't available from this server. Sign in with your browser instead (takes 30 seconds):
+            Automatic login is not available right now. Sign in with your browser and paste the Garmin ticket here:
         </p>
         <ol style="font-size: 13px; color: var(--text-secondary); margin: 10px 0; padding-left: 20px; line-height: 2;">
             <li>Tap <strong>Sign into Garmin</strong> below (opens a new tab)</li>
             <li>Log in with your Garmin email and password</li>
-            <li>After login, <strong>copy the URL</strong> from the address bar</li>
-            <li>Come back here and <strong>paste it</strong> in the box below</li>
+            <li>Copy either the final page URL, the page source, or the raw <strong>ST-...</strong> ticket</li>
+            <li>Come back here and paste it in the box below</li>
         </ol>
         <a href="https://sso.garmin.com/sso/signin?id=gauth-widget&embedWidget=true&gauthHost=https%3A%2F%2Fsso.garmin.com%2Fsso&service=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&source=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&redirectAfterAccountLoginUrl=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&redirectAfterAccountCreationUrl=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed"
            target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="margin-bottom: 12px;">
@@ -30,13 +30,19 @@
             Sign into Garmin
         </a>
         <div class="form-group" style="margin-bottom: 8px;">
-            <label class="form-label" style="font-size: 12px;">Paste the URL here after signing in:</label>
+            <label class="form-label" style="font-size: 12px;">Paste the Garmin ticket, final URL, or page source:</label>
             <div style="display: flex; gap: 8px;">
-                <input class="form-input" type="text" id="garmin_ticket_url" placeholder="https://sso.garmin.com/sso/embed?ticket=ST-..." style="flex: 1; font-size: 13px;">
+                <input class="form-input" type="text" id="garmin_ticket_url" placeholder="ST-... or embed?ticket=ST-..." style="flex: 1; font-size: 13px;">
                 <button type="button" class="btn btn-primary btn-sm" onclick="exchangeTicket()" style="white-space: nowrap;">Connect</button>
             </div>
             <div id="ticket-result" style="margin-top: 4px;"></div>
         </div>
+        {% if not is_cloud %}
+        <p class="form-hint" style="margin-top: 8px; line-height: 1.7;">
+            Running locally with <code>liftosaur serve</code>: the app can exchange the Garmin ticket on this machine.
+            If the address bar does not show <code>ticket=...</code>, copy the raw <code>ST-...</code> value from the page source instead.
+        </p>
+        {% endif %}
         {% if allow_skip %}
         <div style="margin-top: 6px;">
             <a href="/" class="btn btn-secondary btn-sm" style="font-size: 12px;">Skip for now</a>
@@ -76,6 +82,12 @@
                 <label class="form-label" for="garmin_password">Password</label>
                 <input class="form-input" type="password" id="garmin_password" name="garmin_password" placeholder="{% if is_cloud %}Pre-filled from deploy{% else %}Stored locally only{% endif %}" autocomplete="current-password">
             </div>
+            {% if not is_cloud %}
+            <div class="form-hint" style="line-height: 1.7;">
+                If Garmin blocks the direct login test, save your email first, then use the ticket flow above.
+                Local runs exchange that ticket through this server, so you do not depend on the external worker.
+            </div>
+            {% endif %}
         </div>
 
         <div class="card section">
@@ -116,23 +128,30 @@ async function exchangeTicket() {
     const urlInput = document.getElementById('garmin_ticket_url');
     const result = document.getElementById('ticket-result');
     const raw = urlInput.value.trim();
-    if (!raw) { result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Paste the URL first</span>'; return; }
+    if (!raw) { result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Paste the Garmin ticket first</span>'; return; }
 
-    // Extract ticket from URL or raw ticket string
+    // Extract ticket from URL, raw HTML, or raw ST ticket string.
     let ticket = '';
-    const ticketMatch = raw.match(/ticket=([^&\s]+)/);
-    if (ticketMatch) {
-        ticket = ticketMatch[1];
-    } else if (raw.startsWith('ST-')) {
-        ticket = raw;
-    } else {
-        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">No ticket found in URL. Make sure you copied the full URL after signing in.</span>';
+    const patterns = [
+        /ticket=([^&"'\\s<]+)/i,
+        /(ST-[A-Za-z0-9-]+)/,
+    ];
+    for (const pattern of patterns) {
+        const match = raw.match(pattern);
+        if (match) {
+            ticket = match[1];
+            break;
+        }
+    }
+    if (!ticket) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">No Garmin ticket found. Paste the raw ST ticket, the final URL, or the page source.</span>';
         return;
     }
 
     result.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Connecting to Garmin...</span>';
     try {
-        // Step 1: Exchange ticket for tokens via Cloudflare Worker (bypasses cloud IP blocks)
+        let payload;
+        {% if is_cloud %}
         const exchResp = await fetch('https://liftosaur2garmin-exchange.gkos.workers.dev/exchange', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -143,11 +162,15 @@ async function exchangeTicket() {
             result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; ' + exchData.error + '</span>';
             return;
         }
-        // Step 2: Store tokens on our server
+        payload = { tokens: exchData };
+        {% else %}
+        payload = { ticket: ticket };
+        {% endif %}
+
         const storeResp = await fetch('/api/garmin-ticket', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tokens: exchData })
+            body: JSON.stringify(payload)
         });
         const storeData = await storeResp.json();
         if (storeData.ok) {
@@ -161,7 +184,7 @@ async function exchangeTicket() {
             result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; ' + (storeData.error || 'Failed to save tokens') + '</span>';
         }
     } catch (e) {
-        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; Network error — try again</span>';
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; Network error. Try again.</span>';
     }
 }
 
