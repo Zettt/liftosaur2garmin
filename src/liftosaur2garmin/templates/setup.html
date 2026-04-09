@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}Setup · liftosaur2garmin{% endblock %}
+
+{% block content %}
+<div style="max-width: 560px; margin: 0 auto;">
+    <div class="page-header" style="text-align: center; margin-bottom: 36px;">
+        <img src="/static/favicon.svg" width="56" height="56" alt="liftosaur2garmin" style="border-radius: 14px; margin-bottom: 16px;">
+        <h1>Welcome to liftosaur2garmin</h1>
+        <p>Get your Liftosaur workouts on Garmin Connect.<br>Set up takes about 2 minutes.</p>
+    </div>
+
+    {% if garmin_error %}
+    <div class="card" style="margin-bottom: 20px; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.06);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue, #3b82f6)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <span style="font-weight: 600; color: var(--blue, #3b82f6);">Sign into Garmin manually</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-top: 6px;">
+            Automatic login is not available right now. Sign in with your browser and paste the Garmin ticket here:
+        </p>
+        <ol style="font-size: 13px; color: var(--text-secondary); margin: 10px 0; padding-left: 20px; line-height: 2;">
+            <li>Tap <strong>Sign into Garmin</strong> below (opens a new tab)</li>
+            <li>Log in with your Garmin email and password</li>
+            <li>Copy either the final page URL, the page source, or the raw <strong>ST-...</strong> ticket</li>
+            <li>Come back here and paste it in the box below</li>
+        </ol>
+        <a href="https://sso.garmin.com/sso/signin?id=gauth-widget&embedWidget=true&gauthHost=https%3A%2F%2Fsso.garmin.com%2Fsso&service=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&source=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&redirectAfterAccountLoginUrl=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed&redirectAfterAccountCreationUrl=https%3A%2F%2Fsso.garmin.com%2Fsso%2Fembed"
+           target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="margin-bottom: 12px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Sign into Garmin
+        </a>
+        <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 12px;">Paste the Garmin ticket, final URL, or page source:</label>
+            <div style="display: flex; gap: 8px;">
+                <input class="form-input" type="text" id="garmin_ticket_url" placeholder="ST-... or embed?ticket=ST-..." style="flex: 1; font-size: 13px;">
+                <button type="button" class="btn btn-primary btn-sm" onclick="exchangeTicket()" style="white-space: nowrap;">Connect</button>
+            </div>
+            <div id="ticket-result" style="margin-top: 4px;"></div>
+        </div>
+        {% if not is_cloud %}
+        <p class="form-hint" style="margin-top: 8px; line-height: 1.7;">
+            Running locally with <code>liftosaur serve</code>: the app can exchange the Garmin ticket on this machine.
+            If the address bar does not show <code>ticket=...</code>, copy the raw <code>ST-...</code> value from the page source instead.
+        </p>
+        {% endif %}
+        {% if allow_skip %}
+        <div style="margin-top: 6px;">
+            <a href="/" class="btn btn-secondary btn-sm" style="font-size: 12px;">Skip for now</a>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/setup">
+        <div class="card section">
+            <div class="card-title" style="margin-bottom: 16px;">1. Liftosaur API Key</div>
+            <div class="form-group">
+                <label class="form-label" for="hevy_api_key">API Key</label>
+                <div style="display: flex; gap: 8px;">
+                    <input class="form-input" type="text" id="hevy_api_key" name="hevy_api_key" placeholder="Paste your Liftosaur API key" value="{{ config.get('liftosaur_api_key') or config.get('hevy_api_key', '') }}" required autocomplete="off" style="flex: 1;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="validateLiftosaurKey()" style="white-space: nowrap;">Test Key</button>
+                </div>
+                <div id="hevy-validate-result" style="margin-top: 4px;"></div>
+                {% if not (config.get('liftosaur_api_key') or config.get('hevy_api_key')) %}
+                <div class="form-hint" style="line-height: 1.8;">
+                    <strong>How to get your key:</strong><br>
+                    1. Open Liftosaur and go to <strong>Settings</strong><br>
+                    2. Open <strong>API Keys</strong><br>
+                    3. Create a key and copy it here
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card section">
+            <div class="card-title" style="margin-bottom: 16px;">2. Garmin Connect</div>
+            <div class="form-group">
+                <label class="form-label" for="garmin_email">Email</label>
+                <input class="form-input" type="email" id="garmin_email" name="garmin_email" placeholder="your@email.com" value="{{ config.get('garmin_email', '') }}" autocomplete="email">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="garmin_password">Password</label>
+                <input class="form-input" type="password" id="garmin_password" name="garmin_password" placeholder="{% if is_cloud %}Pre-filled from deploy{% else %}Stored locally only{% endif %}" autocomplete="current-password">
+            </div>
+            {% if not is_cloud %}
+            <div class="form-hint" style="line-height: 1.7;">
+                If Garmin blocks the direct login test, save your email first, then use the ticket flow above.
+                Local runs exchange that ticket through this server, so you do not depend on the external worker.
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card section">
+            <div class="card-title" style="margin-bottom: 16px;">3. Your Profile</div>
+            <div class="form-hint" style="margin-bottom: 12px;">Used for calorie estimation in FIT files.</div>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label" for="weight_kg">Weight (kg)</label>
+                    <input class="form-input" type="number" id="weight_kg" name="weight_kg" value="{{ config.get('user_profile', {}).get('weight_kg', 80) }}" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="birth_year">Birth Year</label>
+                    <input class="form-input" type="number" id="birth_year" name="birth_year" value="{{ config.get('user_profile', {}).get('birth_year', 1990) }}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="sex">Sex</label>
+                    <select class="form-select" id="sex" name="sex">
+                        <option value="male" {{ 'selected' if config.get('user_profile', {}).get('sex', 'male') == 'male' }}>Male</option>
+                        <option value="female" {{ 'selected' if config.get('user_profile', {}).get('sex') == 'female' }}>Female</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">
+            Save &amp; Continue
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+
+        <p style="font-size: 11px; color: var(--text-muted); margin-top: 12px; line-height: 1.6; text-align: center;">
+            If your Garmin account is connected to Strava, synced workouts will also appear there.
+        </p>
+    </form>
+</div>
+
+<script>
+async function exchangeTicket() {
+    const urlInput = document.getElementById('garmin_ticket_url');
+    const result = document.getElementById('ticket-result');
+    const raw = urlInput.value.trim();
+    if (!raw) { result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Paste the Garmin ticket first</span>'; return; }
+
+    // Extract ticket from URL, raw HTML, or raw ST ticket string.
+    let ticket = '';
+    const patterns = [
+        /ticket=([^&"'\\s<]+)/i,
+        /(ST-[A-Za-z0-9-]+)/,
+    ];
+    for (const pattern of patterns) {
+        const match = raw.match(pattern);
+        if (match) {
+            ticket = match[1];
+            break;
+        }
+    }
+    if (!ticket) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">No Garmin ticket found. Paste the raw ST ticket, the final URL, or the page source.</span>';
+        return;
+    }
+
+    result.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Connecting to Garmin...</span>';
+    try {
+        let payload;
+        {% if is_cloud %}
+        const exchResp = await fetch('https://liftosaur2garmin-exchange.gkos.workers.dev/exchange', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket: ticket })
+        });
+        const exchData = await exchResp.json();
+        if (exchData.error) {
+            result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; ' + exchData.error + '</span>';
+            return;
+        }
+        payload = { tokens: exchData };
+        {% else %}
+        payload = { ticket: ticket };
+        {% endif %}
+
+        const storeResp = await fetch('/api/garmin-ticket', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const storeData = await storeResp.json();
+        if (storeData.ok) {
+            result.innerHTML = '<span style="font-size: 12px; color: var(--accent);">&#10003; Connected to Garmin!</span>'
+                + '<p style="font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.5;">'
+                + 'If your first sync fails with an upload error, go to '
+                + '<a href="https://connect.garmin.com/modern/settings" target="_blank" style="color: var(--accent);">Garmin Connect Settings</a>'
+                + ' > Data > enable <strong>Device Upload</strong>. This is a one-time requirement for some accounts.</p>';
+            setTimeout(function() { window.location.href = '/'; }, 5000);
+        } else {
+            result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; ' + (storeData.error || 'Failed to save tokens') + '</span>';
+        }
+    } catch (e) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; Network error. Try again.</span>';
+    }
+}
+
+async function validateLiftosaurKey() {
+    const key = document.getElementById('hevy_api_key').value.trim();
+    const result = document.getElementById('hevy-validate-result');
+    if (!key) { result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Enter a key first</span>'; return; }
+    result.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Testing...</span>';
+    try {
+        const resp = await fetch('/api/validate-hevy?key=' + encodeURIComponent(key));
+        if (resp.ok) {
+            const data = await resp.json();
+            result.innerHTML = '<span style="font-size: 12px; color: var(--accent);">&#10003; Valid — ' + data.workout_count + ' workouts found</span>';
+        } else {
+            result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; Invalid key (HTTP ' + resp.status + ')</span>';
+        }
+    } catch (e) {
+        result.innerHTML = '<span style="font-size: 12px; color: var(--red);">&#10007; Network error</span>';
+    }
+}
+</script>
+{% endblock %}
