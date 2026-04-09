@@ -1,6 +1,0 @@
-[submodule "hevy2garmin"]
-	path = hevy2garmin
-	url = https://github.com/drkostas/hevy2garmin.git
-[submodule "liftosaur"]
-	path = liftosaur
-	url = https://github.com/astashov/liftosaur.git
