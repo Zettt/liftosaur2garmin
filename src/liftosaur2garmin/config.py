@@ -49,7 +49,7 @@ def load_config() -> dict[str, Any]:
     """Load config from file, then overlay environment variables.
 
     Env vars take precedence over config file values:
-      LIFTOSAUR_API_KEY, GARMIN_EMAIL, GARMIN_PASSWORD
+      LIFTOSAUR_API_KEY, HEVY_API_KEY, GARMIN_EMAIL, GARMIN_PASSWORD
     """
     import os
 
@@ -82,11 +82,8 @@ def load_config() -> dict[str, Any]:
                             if row["platform"] in {"liftosaur", "hevy"} and creds.get("api_key"):
                                 config["liftosaur_api_key"] = creds["api_key"]
                                 config["hevy_api_key"] = creds["api_key"]
-                            elif row["platform"] == "garmin":
-                                if creds.get("email"):
-                                    config["garmin_email"] = creds["email"]
-                                if creds.get("password"):
-                                    config["garmin_password"] = creds["password"]
+                            elif row["platform"] == "garmin" and creds.get("email"):
+                                config["garmin_email"] = creds["email"]
                         # App settings
                         cur.execute("SELECT key, value FROM app_cache WHERE key IN ('user_profile', 'timing', 'hr_fusion')")
                         for row in cur.fetchall():
@@ -138,14 +135,13 @@ def is_configured() -> bool:
     """Check if initial setup has been done.
 
     On Vercel (DATABASE_URL set): requires both API key AND Garmin tokens in DB.
-    Locally: just checks for API key (tokens are file-based).
+    Locally: just checks for API key. Garmin connection happens after setup.
     """
     import os
     config = load_config()
     if not (config.get("liftosaur_api_key") or config.get("hevy_api_key")):
         return False
-    # On cloud deployments, check that Garmin setup started (either credentials
-    # saved from setup form, or tokens from browser-based auth, or source key in DB)
+    # On cloud deployments, require imported Garmin tokens.
     from liftosaur2garmin.db import get_database_url
     if get_database_url():
         try:
@@ -156,7 +152,7 @@ def is_configured() -> bool:
             with _db._get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT 1 FROM platform_credentials WHERE platform IN ('garmin', 'garmin_tokens', 'liftosaur', 'hevy') LIMIT 1"
+                        "SELECT 1 FROM platform_credentials WHERE platform = 'garmin_tokens' LIMIT 1"
                     )
                     if cur.fetchone() is None:
                         return False

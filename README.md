@@ -67,14 +67,14 @@ The main environment variables are:
 
 - `LIFTOSAUR_API_KEY`
 - `GARMIN_EMAIL`
-- `GARMIN_PASSWORD`
+
+`GARMIN_PASSWORD` is optional. It is still accepted for direct local CLI login, but the primary flow is to connect Garmin once and reuse the saved token file.
 
 Example:
 
 ```bash
 LIFTOSAUR_API_KEY="your-liftosaur-api-key"
 GARMIN_EMAIL="you@example.com"
-GARMIN_PASSWORD="your-garmin-password"
 ```
 
 If a `.env` file exists in your working directory, the app loads it automatically.
@@ -87,16 +87,33 @@ source .env
 set +a
 ```
 
-The interactive setup wizard is the simplest path for most users:
+The local bootstrap flow is the simplest path for most users:
 
 ```bash
 liftosaur2garmin init
 ```
 
-That command saves your settings to:
+That command:
+
+- saves app settings to `~/.liftosaur2garmin/config.json`
+- performs Garmin login on your own machine
+- prompts for an MFA code if Garmin requests one
+- writes the Garmin token file to `~/.garminconnect/garmin_tokens.json`
+
+You can also use the dashboard for the same local flow:
 
 ```bash
-~/.liftosaur2garmin/config.json
+liftosaur2garmin serve
+```
+
+Then open the local setup page and use `Connect Garmin`.
+
+Hosted deployments use local bootstrap too. Connect Garmin locally first, then upload the exported token file in the hosted setup page.
+
+The Garmin token file can be exported with:
+
+```bash
+liftosaur2garmin export-garmin-token
 ```
 
 ## CLI
@@ -107,10 +124,19 @@ liftosaur2garmin sync
 liftosaur2garmin list
 liftosaur2garmin status
 liftosaur2garmin unmapped
+liftosaur2garmin export-garmin-token
 liftosaur2garmin serve
 ```
 
-You can also pass credentials as flags for one-off runs:
+You can still pass credentials as flags for one-off local runs:
+
+```bash
+liftosaur2garmin sync \
+  --liftosaur-api-key "$LIFTOSAUR_API_KEY" \
+  --garmin-email "$GARMIN_EMAIL"
+```
+
+If you want the CLI to attempt a fresh local Garmin login instead of reusing saved tokens, you can also add:
 
 ```bash
 liftosaur2garmin sync \
@@ -129,6 +155,7 @@ source .venv/bin/activate
 UV_CACHE_DIR=.uv-cache uv pip install -e ".[dev]"
 export LIFTOSAUR_API_KEY="your-liftosaur-api-key"
 liftosaur2garmin init
+liftosaur2garmin export-garmin-token
 liftosaur2garmin list
 liftosaur2garmin sync --dry-run
 ```
@@ -143,3 +170,4 @@ pytest
 
 - The Liftosaur client normalizes history records into the workout structure expected by the existing Garmin sync pipeline.
 - Exercise mapping still uses the large Hevy-derived Garmin mapping table, with compatibility logic for Liftosaur-style names such as `Bench Press, Barbell`.
+- The hosted setup page does not log into Garmin directly. It imports a token file produced by a local `init` or `serve` flow.

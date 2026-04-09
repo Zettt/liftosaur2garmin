@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import threading
+import time
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
@@ -47,6 +50,64 @@ def _render(template_name: str, **ctx) -> HTMLResponse:
     return HTMLResponse(t.render(**ctx))
 
 
+def _has_garmin_tokens(config: dict[str, Any] | None = None) -> bool:
+    cfg = config or load_config()
+    try:
+        if db.get_database_url():
+            _db = db.get_db()
+            if hasattr(_db, "_get_conn"):
+                with _db._get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT 1 FROM platform_credentials WHERE platform = 'garmin_tokens' LIMIT 1"
+                        )
+                        return cur.fetchone() is not None
+            return False
+        from liftosaur2garmin.garmin import token_file_path
+
+        return token_file_path(cfg.get("garmin_token_dir", "~/.garminconnect")).exists()
+    except Exception:
+        return False
+
+
+def _persist_cloud_credentials(hevy_api_key: str = "", garmin_email: str = "") -> None:
+    if not db.get_database_url():
+        return
+    try:
+        _db = db.get_db()
+        if hasattr(_db, "_get_conn"):
+            import json as _json
+
+            with _db._get_conn() as conn:
+                with conn.cursor() as cur:
+                    hevy_key = hevy_api_key or os.environ.get("HEVY_API_KEY", "")
+                    if hevy_key:
+                        cur.execute(
+                            """
+                            INSERT INTO platform_credentials (platform, auth_type, credentials, status)
+                            VALUES ('hevy', 'api_key', %s, 'active')
+                            ON CONFLICT (platform) DO UPDATE
+                            SET credentials = EXCLUDED.credentials, status = 'active'
+                            """,
+                            (_json.dumps({"api_key": hevy_key}),),
+                        )
+                    if garmin_email:
+                        cur.execute(
+                            """
+                            INSERT INTO platform_credentials (platform, auth_type, credentials, status)
+                            VALUES ('garmin', 'email', %s, 'active')
+                            ON CONFLICT (platform) DO UPDATE
+                            SET auth_type = EXCLUDED.auth_type,
+                                credentials = EXCLUDED.credentials,
+                                status = 'active'
+                            """,
+                            (_json.dumps({"email": garmin_email}),),
+                        )
+                conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to persist cloud credentials: %s", exc)
+
+
 app = FastAPI(title="liftosaur2garmin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -63,6 +124,7 @@ _unmapped_cache: list[tuple[str, int]] | None = None
 _unmapped_cache_time: float = 0
 _failed_ids: set[str] = set()  # Workouts that failed upload this session (retried next session)
 _VALID_AUTOSYNC_INTERVALS = (30, 60, 120, 240, 360, 720, 1440)
+_pending_garmin_logins: dict[str, dict[str, Any]] = {}
 
 
 def _acquire_sync_lock() -> bool:
@@ -290,8 +352,18 @@ _is_configured_cache: bool | None = None
 async def check_setup(request: Request, call_next):
     global _is_configured_cache
     path = request.url.path
-    if path in ("/setup", "/favicon.ico", "/api/sync-one", "/api/cron/sync",
-                "/api/setup-actions", "/api/garmin-ticket") \
+    if path in (
+        "/setup",
+        "/favicon.ico",
+        "/api/sync-one",
+        "/api/cron/sync",
+        "/api/setup-actions",
+        "/api/validate-hevy",
+        "/api/garmin/login/start",
+        "/api/garmin/login/finish",
+        "/api/garmin/import-token-file",
+        "/api/garmin/export-token-file",
+    ) \
        or path.startswith("/static"):
         return await call_next(request)
     # Cache is_configured result (set to True after first successful setup)
@@ -312,22 +384,7 @@ async def dashboard(request: Request):
     synced_count = db.get_synced_count()
     recent = db.get_recent_synced(5)
 
-    # Check garmin_connected FIRST (DB/file check only, no HTTP to Garmin)
-    garmin_connected = False
-    try:
-        if db.get_database_url():
-            _db = db.get_db()
-            if hasattr(_db, '_get_conn'):
-                with _db._get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT 1 FROM platform_credentials WHERE platform = 'garmin_tokens' AND credentials != '{}' LIMIT 1")
-                        garmin_connected = cur.fetchone() is not None
-        else:
-            from pathlib import Path
-            token_dir = Path(config.get("garmin_token_dir", "~/.garminconnect")).expanduser()
-            garmin_connected = (token_dir / "oauth2_token.json").exists()
-    except Exception:
-        pass
+    garmin_connected = _has_garmin_tokens(config)
 
     hevy_total = 0
     matched_count = synced_count  # Use DB count (fast) instead of Garmin API (slow)
@@ -368,14 +425,20 @@ async def dashboard(request: Request):
 
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request):
-    return _render("setup.html", config=load_config(), is_cloud=bool(db.get_database_url()))
+    config = load_config()
+    return _render(
+        "setup.html",
+        config=config,
+        is_cloud=bool(db.get_database_url()),
+        garmin_connected=_has_garmin_tokens(config),
+        setup_saved=request.query_params.get("saved") == "1",
+    )
 
 
 @app.post("/setup")
 async def setup_save(
     hevy_api_key: str = Form(""),
     garmin_email: str = Form(""),
-    garmin_password: str = Form(""),
     weight_kg: float = Form(80.0),
     birth_year: int = Form(1990),
     sex: str = Form("male"),
@@ -385,190 +448,112 @@ async def setup_save(
         config["hevy_api_key"] = hevy_api_key
     if garmin_email:
         config["garmin_email"] = garmin_email
-    if garmin_password:
-        config["garmin_password"] = garmin_password
     config["user_profile"]["weight_kg"] = weight_kg
     config["user_profile"]["birth_year"] = birth_year
     config["user_profile"]["sex"] = sex
     save_config(config)
-
-    # On cloud deployments, persist credentials to DB so GitHub Actions can read them
-    if db.get_database_url():
-        try:
-            _db = db.get_db()
-            if hasattr(_db, '_get_conn'):
-                hevy_key = hevy_api_key or os.environ.get("HEVY_API_KEY", "")
-                g_email = garmin_email or os.environ.get("GARMIN_EMAIL", "")
-                g_password = garmin_password or os.environ.get("GARMIN_PASSWORD", "")
-                import json as _json
-                with _db._get_conn() as conn:
-                    with conn.cursor() as cur:
-                        if hevy_key:
-                            cur.execute("""
-                                INSERT INTO platform_credentials (platform, auth_type, credentials, status)
-                                VALUES ('hevy', 'api_key', %s, 'active')
-                                ON CONFLICT (platform) DO UPDATE SET credentials = EXCLUDED.credentials, status = 'active'
-                            """, (_json.dumps({"api_key": hevy_key}),))
-                        if g_email:
-                            cur.execute("""
-                                INSERT INTO platform_credentials (platform, auth_type, credentials, status)
-                                VALUES ('garmin', 'password', %s, 'active')
-                                ON CONFLICT (platform) DO UPDATE SET credentials = EXCLUDED.credentials, status = 'active'
-                            """, (_json.dumps({"email": g_email, "password": g_password}),))
-                    conn.commit()
-        except Exception as e:
-            logger.warning("Failed to persist credentials to DB: %s", e)
-
-    # Try server-side Garmin auth
-    garmin_pw = garmin_password or os.environ.get("GARMIN_PASSWORD", "")
-    garmin_em = garmin_email or config.get("garmin_email", "")
-
-    garmin_error = None
-    if garmin_pw and garmin_em:
-        try:
-            from liftosaur2garmin.garmin import get_client
-            get_client(garmin_em, garmin_pw)
-        except Exception as e:
-            logger.warning("Garmin login test failed: %s", e)
-            err = str(e)
-            if "MFA" in err.upper():
-                garmin_error = (
-                    "Garmin MFA (two-factor authentication) is enabled. "
-                    "Temporarily disable MFA in your Garmin account settings, "
-                    "connect here, then re-enable it."
-                )
-            elif "429" in err or "rate limit" in err.lower():
-                garmin_error = (
-                    "Garmin is temporarily blocking login attempts from this server. "
-                    "This usually resolves within 1-2 hours. Click 'Skip for now' "
-                    "and try again later from the Settings page."
-                )
-            elif "SSO login failed" in err:
-                garmin_error = (
-                    "Garmin login failed. Double-check your email and password. "
-                    "If they're correct, Garmin may be temporarily blocking logins "
-                    "from this server. Try again in an hour."
-                )
-            else:
-                # Strip any HTML tags from Garmin error responses
-                cleaned = re.sub(r"<[^>]+>", " ", err)
-                cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()[:200]
-                garmin_error = cleaned or "Unknown error. Check your email and password."
-    if garmin_error:
-        return _render("setup.html", config=load_config(), garmin_error=garmin_error,
-                        allow_skip=True, is_cloud=bool(db.get_database_url()))
-
+    _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
+    if db.get_database_url() and not _has_garmin_tokens(config):
+        return RedirectResponse("/setup?saved=1", status_code=303)
     return RedirectResponse("/", status_code=303)
 
 
-# ── Browser-based Garmin auth (ticket exchange) ───────────────────────────
-
-def _exchange_garmin_ticket(ticket: str) -> dict[str, dict]:
-    """Exchange a Garmin SSO ticket for OAuth tokens."""
-    import requests as req
-    from urllib.parse import parse_qs, quote
-
-    from garmin_auth.sso import (
-        API_BASE,
-        CONSUMER_URL,
-        SSO_BASE,
-        USER_AGENT,
-        _build_oauth1_header,
-        exchange_oauth1,
-    )
-
-    session = req.Session()
-    session.headers["User-Agent"] = USER_AGENT
-
-    consumer_resp = session.get(CONSUMER_URL, timeout=10)
-    consumer_resp.raise_for_status()
-    consumer = consumer_resp.json()
-    consumer_key = consumer["consumer_key"]
-    consumer_secret = consumer["consumer_secret"]
-
-    preauth_url = (
-        f"{API_BASE}/oauth-service/oauth/preauthorized"
-        f"?ticket={quote(ticket)}"
-        f"&login-url={quote(f'{SSO_BASE}/embed')}"
-        f"&accepts-mfa-tokens=true"
-    )
-    preauth_header = _build_oauth1_header("GET", preauth_url, consumer_key, consumer_secret)
-    preauth_resp = session.get(
-        preauth_url,
-        headers={
-            "Authorization": preauth_header,
-            "User-Agent": "com.garmin.android.apps.connectmobile",
-        },
-        timeout=10,
-    )
-    if not preauth_resp.ok:
-        raise RuntimeError(
-            f"OAuth1 exchange failed ({preauth_resp.status_code}): "
-            f"{preauth_resp.text[:200]}"
-        )
-
-    preauth_data = parse_qs(preauth_resp.text)
-    oauth1 = {
-        "oauth_token": preauth_data.get("oauth_token", [""])[0],
-        "oauth_token_secret": preauth_data.get("oauth_token_secret", [""])[0],
-        "domain": "garmin.com",
-    }
-    if not oauth1["oauth_token"]:
-        raise RuntimeError("No OAuth1 token in Garmin response")
-
-    oauth2 = exchange_oauth1(oauth1, consumer_key, consumer_secret)
-    return {
-        "oauth1_token.json": oauth1,
-        "oauth2_token.json": oauth2,
-    }
+# ── Garmin auth APIs ───────────────────────────────────────────────────────
 
 
-def _store_garmin_tokens(tokens: dict[str, dict]) -> None:
-    """Store Garmin OAuth tokens in the configured backend."""
-    database_url = db.get_database_url()
-    if database_url:
-        from garmin_auth.storage import DBTokenStore
-
-        store = DBTokenStore(database_url)
-        store.save(tokens)
-        return
-
-    from garmin_auth.storage import FileTokenStore
-
-    store = FileTokenStore()
-    store.save(tokens)
+def _garmin_auth_error(error: Exception) -> str:
+    cleaned = re.sub(r"<[^>]+>", " ", str(error))
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned[:200] or "Unknown Garmin authentication error"
 
 
-@app.post("/api/garmin-ticket")
-async def garmin_ticket_store(request: Request):
-    """Exchange or store Garmin OAuth tokens."""
+@app.post("/api/garmin/login/start")
+async def api_garmin_login_start(request: Request):
     body = await request.json()
-    tokens_data = body.get("tokens")
-    ticket = str(body.get("ticket", "")).strip()
+    email = str(body.get("email", "")).strip()
+    password = str(body.get("password", "")).strip()
+    if not email or not password:
+        return JSONResponse({"error": "Garmin email and password are required"}, status_code=400)
 
-    if tokens_data:
-        if "oauth1" not in tokens_data or "oauth2" not in tokens_data:
-            return JSONResponse({"error": "Invalid tokens"}, status_code=400)
-        tokens = {
-            "oauth1_token.json": tokens_data["oauth1"],
-            "oauth2_token.json": tokens_data["oauth2"],
-        }
-    elif ticket:
-        try:
-            tokens = _exchange_garmin_ticket(ticket)
-        except Exception as e:
-            logger.warning("Garmin ticket exchange failed: %s", e)
-            return JSONResponse({"error": str(e)[:200]}, status_code=500)
-    else:
-        return JSONResponse({"error": "Missing Garmin ticket or tokens"}, status_code=400)
+    from liftosaur2garmin.garmin import GarminNeedsMFA, start_login
+
+    config = load_config()
+    config["garmin_email"] = email
+    save_config(config)
+    try:
+        result = start_login(email, password, config.get("garmin_token_dir", "~/.garminconnect"))
+        return JSONResponse({"ok": True, "status": result["status"], "display_name": result.get("display_name")})
+    except GarminNeedsMFA as exc:
+        login_id = secrets.token_urlsafe(16)
+        _pending_garmin_logins[login_id] = {"state": exc.login_state, "email": email, "created_at": time.time()}
+        return JSONResponse({"ok": True, "status": "needs_mfa", "login_id": login_id})
+    except Exception as exc:
+        logger.warning("Garmin login start failed: %s", exc)
+        return JSONResponse({"error": _garmin_auth_error(exc)}, status_code=400)
+
+
+@app.post("/api/garmin/login/finish")
+async def api_garmin_login_finish(request: Request):
+    body = await request.json()
+    login_id = str(body.get("login_id", "")).strip()
+    mfa_code = str(body.get("mfa_code", "")).strip()
+    pending = _pending_garmin_logins.get(login_id)
+    if not login_id or not pending:
+        return JSONResponse({"error": "Garmin login session expired. Start again."}, status_code=400)
+    if not mfa_code:
+        return JSONResponse({"error": "Verification code is required"}, status_code=400)
+
+    from liftosaur2garmin.garmin import finish_login
 
     try:
-        _store_garmin_tokens(tokens)
-        logger.info("Garmin tokens stored successfully")
+        config = load_config()
+        result = finish_login(
+            mfa_code,
+            pending["state"],
+            pending.get("email"),
+            config.get("garmin_token_dir", "~/.garminconnect"),
+        )
+        _pending_garmin_logins.pop(login_id, None)
+        return JSONResponse({"ok": True, "status": result["status"], "display_name": result.get("display_name")})
+    except Exception as exc:
+        logger.warning("Garmin login finish failed: %s", exc)
+        return JSONResponse({"error": _garmin_auth_error(exc)}, status_code=400)
+
+
+@app.post("/api/garmin/import-token-file")
+async def api_garmin_import_token_file(
+    token_file: UploadFile = File(...),
+    garmin_email: str = Form(""),
+):
+    from liftosaur2garmin.garmin import GarminAuthSession, save_token_payload
+
+    try:
+        payload = json.loads((await token_file.read()).decode())
+        if not isinstance(payload, dict):
+            raise ValueError("Garmin token file must be a JSON object")
+        if garmin_email:
+            payload["email"] = garmin_email
+        GarminAuthSession().load_payload(payload)
+        save_token_payload(payload)
+        if garmin_email:
+            config = load_config()
+            config["garmin_email"] = garmin_email
+            save_config(config)
+            _persist_cloud_credentials(garmin_email=garmin_email)
         return JSONResponse({"ok": True})
-    except Exception as e:
-        logger.warning("Garmin token store failed: %s", e)
-        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+    except Exception as exc:
+        logger.warning("Garmin token import failed: %s", exc)
+        return JSONResponse({"error": _garmin_auth_error(exc)}, status_code=400)
+
+
+@app.get("/api/garmin/export-token-file")
+async def api_garmin_export_token_file():
+    from liftosaur2garmin.garmin import token_file_path
+
+    path = token_file_path(load_config().get("garmin_token_dir", "~/.garminconnect"))
+    if not path.exists():
+        return JSONResponse({"error": "No local Garmin token file found"}, status_code=404)
+    return FileResponse(path, filename=path.name, media_type="application/json")
 
 
 @app.get("/workouts", response_class=HTMLResponse)
@@ -683,9 +668,8 @@ async def api_workout_hr(request: Request, hevy_id: str):
 
     try:
         from liftosaur2garmin.hevy import HevyClient
-        from liftosaur2garmin.garmin import get_client
+        from liftosaur2garmin.garmin import RateLimiter, get_client
         from liftosaur2garmin.matcher import fetch_garmin_activities, match_workouts_to_garmin
-        from garmin_auth import RateLimiter
 
         hevy = HevyClient(api_key=config.get("hevy_api_key"))
         data = hevy.get_workouts(page=1, page_size=10)
@@ -824,12 +808,18 @@ async def settings_page(request: Request):
             unmapped[name] = count
     except Exception:
         pass
-    return _render("settings.html", config=config, unmapped=sorted(unmapped.items(), key=lambda x: -x[1]))
+    return _render(
+        "settings.html",
+        config=config,
+        unmapped=sorted(unmapped.items(), key=lambda x: -x[1]),
+        garmin_connected=_has_garmin_tokens(config),
+        is_cloud=bool(db.get_database_url()),
+    )
 
 
 @app.post("/settings")
 async def settings_save(
-    hevy_api_key: str = Form(""), garmin_email: str = Form(""), garmin_password: str = Form(""),
+    hevy_api_key: str = Form(""), garmin_email: str = Form(""),
     weight_kg: float = Form(80.0), birth_year: int = Form(1990), sex: str = Form("male"), vo2max: float = Form(45.0),
     working_set_seconds: int = Form(40), warmup_set_seconds: int = Form(25),
     rest_between_sets_seconds: int = Form(75), rest_between_exercises_seconds: int = Form(120),
@@ -848,6 +838,7 @@ async def settings_save(
     )
     config.setdefault("hr_fusion", {})["enabled"] = hr_fusion_enabled == "on"
     save_config(config)
+    _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
 
     # Persist settings to DB on cloud (filesystem is read-only on Vercel)
     if db.get_database_url():
@@ -956,8 +947,7 @@ async def api_pull_garmin_profile(request: Request):
     """Pull weight, birth date, and gender from Garmin Connect."""
     config = load_config()
     try:
-        from liftosaur2garmin.garmin import get_client
-        from garmin_auth import RateLimiter
+        from liftosaur2garmin.garmin import RateLimiter, get_client
 
         garmin_client = get_client(config.get("garmin_email"))
         limiter = RateLimiter(delay=1.0)
