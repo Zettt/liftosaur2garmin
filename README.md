@@ -2,13 +2,13 @@
 
 Sync Liftosaur workouts to Garmin Connect by converting Liftosaur history records into strength-training FIT files and uploading them to Garmin.
 
-The app is based on the `hevy2garmin` project in this repo, but the source integration is replaced with the Liftosaur REST API described in [`liftosaur/docs/content/api.md`](/Users/zettt/Downloads/liftosaur2garmin/liftosaur/docs/content/api.md).
+This project is based on [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin). It adapts the Garmin Connect and FIT-generation pipeline from that codebase, while replacing the source integration with the Liftosaur REST API documented at [liftosaur.com/doc/api](https://www.liftosaur.com/doc/api). Thanks to Konstantinos Georgiou for publishing the original project this work builds on.
 
 ## What It Does
 
 - Fetches workout history from Liftosaur with a personal API key
 - Parses Liftosaur workout text into exercises, sets, reps, weights, and warmups
-- Reuses the Garmin FIT mapping and upload pipeline from `hevy2garmin`
+- Uses a Garmin FIT mapping and upload pipeline adapted from `hevy2garmin`
 - Supports CLI sync and the FastAPI dashboard flow
 
 ## Requirements
@@ -165,6 +165,10 @@ liftosaur2garmin sync --dry-run
 ```bash
 pytest
 ```
+
+## Acknowledgements
+
+This project builds on the open-source work in [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin) by Konstantinos Georgiou. The Garmin sync, FIT generation, and exercise-mapping approach here started from that codebase and was then adapted for Liftosaur.
 
 ## Notes
 
