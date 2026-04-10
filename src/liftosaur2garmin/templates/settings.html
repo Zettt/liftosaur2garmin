@@ -181,6 +181,24 @@
         </p>
     </div>
 
+    <!-- Update Existing Activities Section -->
+    <div class="card section">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <span class="card-title">Update Existing Activities</span>
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="hidden" name="update_existing_enabled" value="off">
+                <input type="checkbox" name="update_existing_enabled" value="on" {{ 'checked' if config.get('update_existing', {}).get('enabled', True) }} style="width: 18px; height: 18px; accent-color: var(--accent);">
+                <span style="font-size: 13px; color: var(--text-secondary);">Enabled</span>
+            </label>
+        </div>
+        <p class="section-description">
+            When enabled, syncing will check if a matching activity already exists on Garmin (by start time within 30 minutes) and update it with the Liftosaur data instead of creating a duplicate. Disable this to always create new activities.
+        </p>
+    </div>
+
     <!-- Advanced Section (FIT Timing) -->
     <div class="card section">
         <details class="advanced-section">

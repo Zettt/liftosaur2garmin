@@ -623,10 +623,13 @@ class GarminClient:
         )
         return _json_response(response)
 
-    def get_activities(self, start: int = 0, limit: int = 20, activitytype: str | None = None) -> list[Any]:
+    def get_activities(self, start: int = 0, limit: int = 20, activitytype: str | None = None, start_date: str | None = None) -> list[Any]:
         params = {"start": str(start), "limit": str(limit)}
         if activitytype:
             params["activityType"] = str(activitytype)
+        if start_date:
+            params["startDate"] = start_date
+            params["endDate"] = start_date
         response = self.auth.request("GET", self.activities_url, params=params)
         data = _json_response(response)
         return data or []
@@ -867,7 +870,7 @@ def upload_fit(client: GarminClient, fit_path: str | Path, workout_start: str | 
 def find_activity_by_start_time(
     client: GarminClient,
     target_start: str,
-    window_minutes: int = 10,
+    window_minutes: int = 30,
 ) -> int | None:
     from datetime import datetime
 
@@ -876,7 +879,8 @@ def find_activity_by_start_time(
     except (ValueError, TypeError):
         return None
     try:
-        activities = _limiter.call(client.get_activities, 0, 10)
+        target_date = target.strftime("%Y-%m-%d")
+        activities = _limiter.call(client.get_activities, 0, 10, start_date=target_date)
     except Exception:
         return None
     closest_id = None

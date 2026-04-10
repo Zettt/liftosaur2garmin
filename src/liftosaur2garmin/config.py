@@ -42,6 +42,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "hr_fusion": {
         "enabled": True,
     },
+    "update_existing": {
+        "enabled": True,
+    },
 }
 
 

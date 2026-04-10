@@ -256,6 +256,7 @@ def sync(
     garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
     garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
     skip_existing = cfg.get("sync", {}).get("skip_existing", True)
+    update_existing = cfg.get("update_existing", {}).get("enabled", True)
 
     if not limit and not fetch_all and not since:
         limit = cfg.get("sync", {}).get("default_limit", 10)
@@ -309,7 +310,7 @@ def sync(
                     continue
 
                 # Dedup: check if activity already exists on Garmin
-                existing_id = find_activity_by_start_time(garmin_client, start_time) if start_time else None
+                existing_id = find_activity_by_start_time(garmin_client, start_time) if (update_existing and start_time) else None
                 if existing_id:
                     logger.info("  Activity already on Garmin (%s), updating sets", existing_id)
                     activity_id = existing_id
