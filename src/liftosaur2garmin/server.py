@@ -1058,6 +1058,7 @@ async def api_sync_single(request: Request, workout_id: str):
         from liftosaur2garmin.hevy import HevyClient
         from liftosaur2garmin.fit import generate_fit
         from liftosaur2garmin.garmin import get_client, rename_activity, set_description, upload_fit, generate_description, find_activity_by_start_time
+        from liftosaur2garmin.sync import update_existing_activity_sets
         import tempfile
 
         # force_upload=true skips dedup (used by re-sync after edit)
@@ -1082,7 +1083,8 @@ async def api_sync_single(request: Request, workout_id: str):
             result = generate_fit(workout, hr_samples=None, output_path=fit_path)
             if existing_id:
                 aid = existing_id
-                logger.info("Activity already on Garmin (%s), skipping upload", aid)
+                logger.info("Activity already on Garmin (%s), updating sets", aid)
+                update_existing_activity_sets(garmin_client, aid, workout)
             else:
                 upload_result = upload_fit(garmin_client, fit_path, workout_start=workout_start)
                 aid = upload_result.get("activity_id")
@@ -1437,6 +1439,7 @@ async def _do_sync_one(request: Request):
     from liftosaur2garmin.hevy import HevyClient
     from liftosaur2garmin.garmin import get_client, upload_fit, rename_activity, set_description, generate_description
     from liftosaur2garmin.fit import generate_fit
+    from liftosaur2garmin.sync import update_existing_activity_sets
     import tempfile
 
     hevy = HevyClient(api_key=hevy_api_key)
@@ -1498,8 +1501,9 @@ async def _do_sync_one(request: Request):
             existing_id = find_activity_by_start_time(garmin_client, workout_start)
 
         if existing_id:
-            logger.info("Activity already on Garmin (%s), skipping upload for %s", existing_id, unsynced["title"])
+            logger.info("Activity already on Garmin (%s), updating sets for %s", existing_id, unsynced["title"])
             aid = existing_id
+            update_existing_activity_sets(garmin_client, aid, unsynced)
             # Still generate FIT to get calorie estimate
             with tempfile.TemporaryDirectory() as tmp:
                 fit_path = f"{tmp}/{unsynced['id']}.fit"

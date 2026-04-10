@@ -635,6 +635,15 @@ class GarminClient:
         response = self.auth.request("GET", f"{self.activity_url}/{activity_id}")
         return _json_response(response)
 
+    def get_exercise_sets(self, activity_id: str | int) -> dict[str, Any]:
+        response = self.auth.request("GET", f"{self.activity_url}/{activity_id}/exerciseSets")
+        return _json_response(response)
+
+    def put_exercise_sets(self, activity_id: str | int, exercise_sets: list[dict[str, Any]]) -> Any:
+        payload = {"activityId": int(activity_id), "exerciseSets": exercise_sets}
+        response = self.auth.request("PUT", f"{self.activity_url}/{activity_id}/exerciseSets", json=payload)
+        return _json_response(response)
+
     def get_heart_rates(self, cdate: str) -> dict[str, Any]:
         if not self.display_name:
             self.auth._load_profile()
@@ -903,6 +912,17 @@ def set_description(client: GarminClient, activity_id: int, description: str) ->
     client.put_json(url, payload)
     time.sleep(1.0)
     logger.info("  Description set (%d chars)", len(description))
+
+
+def get_exercise_sets(client: GarminClient, activity_id: int) -> list[dict]:
+    data = _limiter.call(client.get_exercise_sets, activity_id)
+    return data.get("exerciseSets", [])
+
+
+def update_exercise_sets(client: GarminClient, activity_id: int, exercise_sets: list[dict]) -> None:
+    _limiter.call(client.put_exercise_sets, activity_id, exercise_sets)
+    time.sleep(1.0)
+    logger.info("  Updated exercise sets for activity %s", activity_id)
 
 
 def upload_image(client: GarminClient, activity_id: int, image_bytes: bytes, filename: str = "image.png") -> None:
