@@ -48,6 +48,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def update_existing_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return whether existing Garmin activities should be updated."""
+    cfg = config or load_config()
+    return bool(cfg.get("update_existing", {}).get("enabled", True))
+
+
 def load_config() -> dict[str, Any]:
     """Load config from file, then overlay environment variables.
 
@@ -88,7 +94,10 @@ def load_config() -> dict[str, Any]:
                             elif row["platform"] == "garmin" and creds.get("email"):
                                 config["garmin_email"] = creds["email"]
                         # App settings
-                        cur.execute("SELECT key, value FROM app_cache WHERE key IN ('user_profile', 'timing', 'hr_fusion')")
+                        cur.execute(
+                            "SELECT key, value FROM app_cache "
+                            "WHERE key IN ('user_profile', 'timing', 'hr_fusion', 'update_existing')"
+                        )
                         for row in cur.fetchall():
                             val = row["value"] if isinstance(row["value"], dict) else json.loads(row["value"])
                             if row["key"] in config and isinstance(config[row["key"]], dict):

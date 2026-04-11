@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from liftosaur2garmin import db
-from liftosaur2garmin.config import is_configured, load_config, save_config
+from liftosaur2garmin.config import is_configured, load_config, save_config, update_existing_enabled
 from liftosaur2garmin.sync import sync
 
 logger = logging.getLogger("liftosaur2garmin")
@@ -1084,7 +1084,7 @@ async def api_sync_single(request: Request, workout_id: str):
         workout_start = workout.get("start_time")
 
         # Dedup: check if activity already exists on Garmin (skip if force)
-        update_existing = config.get("update_existing", {}).get("enabled", True)
+        update_existing = update_existing_enabled(config)
         existing_id = None
         if update_existing and not force_upload and workout_start:
             existing_id = find_activity_by_start_time(garmin_client, workout_start)
@@ -1507,8 +1507,9 @@ async def _do_sync_one(request: Request):
         # Dedup: check if this workout already exists on Garmin before uploading.
         # Prevents duplicates when a prior sync uploaded successfully but crashed
         # before marking the workout as synced in the DB.
+        update_existing = update_existing_enabled(config)
         existing_id = None
-        if workout_start:
+        if update_existing and workout_start:
             existing_id = find_activity_by_start_time(garmin_client, workout_start)
 
         if existing_id:

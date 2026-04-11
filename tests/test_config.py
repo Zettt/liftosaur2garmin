@@ -85,6 +85,49 @@ class TestLoadConfig:
 
         assert config["liftosaur_api_key"] == "exported-key"
 
+    def test_loads_update_existing_from_cloud_db(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("DATABASE_URL", "postgres://example")
+
+        class FakeCursor:
+            def __init__(self) -> None:
+                self.query = ""
+
+            def execute(self, query: str) -> None:
+                self.query = query
+
+            def fetchall(self):
+                if "platform_credentials" in self.query:
+                    return []
+                if "app_cache" in self.query:
+                    return [{"key": "update_existing", "value": {"enabled": False}}]
+                return []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeConn:
+            def cursor(self):
+                return FakeCursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeDb:
+            def _get_conn(self):
+                return FakeConn()
+
+        with patch("liftosaur2garmin.config.CONFIG_FILE", tmp_path / "missing.json"), \
+             patch("liftosaur2garmin.db.get_db", return_value=FakeDb()):
+            config = load_config()
+
+        assert config["update_existing"]["enabled"] is False
+
 
 class TestIsConfigured:
     def test_false_without_api_key(self, tmp_path: Path, monkeypatch) -> None:
