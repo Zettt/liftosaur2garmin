@@ -44,14 +44,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "update_existing": {
         "enabled": True,
+        "match_window_minutes": 30,
     },
 }
 
 
-def update_existing_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return whether existing Garmin activities should be updated."""
+def get_update_existing(config: dict[str, Any] | None = None) -> tuple[bool, int]:
+    """Return (enabled, match_window_minutes) for the update-existing feature."""
     cfg = config or load_config()
-    return bool(cfg.get("update_existing", {}).get("enabled", True))
+    ue = cfg.get("update_existing", {})
+    return bool(ue.get("enabled", True)), int(ue.get("match_window_minutes", 30))
 
 
 def load_config() -> dict[str, Any]:

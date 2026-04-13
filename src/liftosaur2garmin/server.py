@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from liftosaur2garmin import db
-from liftosaur2garmin.config import is_configured, load_config, save_config, update_existing_enabled
+from liftosaur2garmin.config import get_update_existing, is_configured, load_config, save_config
 from liftosaur2garmin.sync import sync
 
 logger = logging.getLogger("liftosaur2garmin")
@@ -825,6 +825,7 @@ async def settings_save(
     rest_between_sets_seconds: int = Form(75), rest_between_exercises_seconds: int = Form(120),
     hr_fusion_enabled: str = Form("off"),
     update_existing_enabled: str = Form("off"),
+    match_window_minutes: int = Form(30),
 ):
     config = load_config()
     if hevy_api_key:
@@ -838,7 +839,9 @@ async def settings_save(
         rest_between_exercises_seconds=rest_between_exercises_seconds,
     )
     config.setdefault("hr_fusion", {})["enabled"] = hr_fusion_enabled == "on"
-    config.setdefault("update_existing", {})["enabled"] = update_existing_enabled == "on"
+    ue = config.setdefault("update_existing", {})
+    ue["enabled"] = update_existing_enabled == "on"
+    ue["match_window_minutes"] = max(1, min(1440, match_window_minutes))
     save_config(config)
     _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
 
@@ -1084,10 +1087,10 @@ async def api_sync_single(request: Request, workout_id: str):
         workout_start = workout.get("start_time")
 
         # Dedup: check if activity already exists on Garmin (skip if force)
-        update_existing = update_existing_enabled(config)
+        update_existing, match_window = get_update_existing(config)
         existing_id = None
         if update_existing and not force_upload and workout_start:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
+            existing_id = find_activity_by_start_time(garmin_client, workout_start, window_minutes=match_window)
 
         with tempfile.TemporaryDirectory() as tmp:
             fit_path = f"{tmp}/{workout_id}.fit"
@@ -1507,10 +1510,10 @@ async def _do_sync_one(request: Request):
         # Dedup: check if this workout already exists on Garmin before uploading.
         # Prevents duplicates when a prior sync uploaded successfully but crashed
         # before marking the workout as synced in the DB.
-        update_existing = update_existing_enabled(config)
+        update_existing, match_window = get_update_existing(config)
         existing_id = None
         if update_existing and workout_start:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
+            existing_id = find_activity_by_start_time(garmin_client, workout_start, window_minutes=match_window)
 
         if existing_id:
             logger.info("Activity already on Garmin (%s), updating sets for %s", existing_id, unsynced["title"])

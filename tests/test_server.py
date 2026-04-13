@@ -203,3 +203,94 @@ class TestSyncOneApi:
         assert find_calls == ["called"]
         assert update_calls == [(999, workout)]
         db_mock.mark_synced.assert_called_once()
+
+
+class TestSettingsSave:
+    """Tests for POST /settings endpoint."""
+
+    def _post_settings(self, client, monkeypatch, form_overrides=None):
+        """Helper: mock config/save, POST /settings, return saved config dict."""
+        saved_config = {}
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.load_config",
+            lambda: {
+                "hevy_api_key": "old-key",
+                "garmin_email": "old@example.com",
+                "user_profile": {"weight_kg": 80, "birth_year": 1990, "sex": "male", "vo2max": 45},
+                "timing": {"working_set_seconds": 40, "warmup_set_seconds": 25, "rest_between_sets_seconds": 75, "rest_between_exercises_seconds": 120},
+                "hr_fusion": {"enabled": True},
+                "update_existing": {"enabled": True, "match_window_minutes": 30},
+            },
+        )
+        monkeypatch.setattr("liftosaur2garmin.server.save_config", lambda c: saved_config.update(c))
+        monkeypatch.setattr("liftosaur2garmin.server._persist_cloud_credentials", lambda **kw: None)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: None)
+
+        defaults = {
+            "hevy_api_key": "test-key",
+            "garmin_email": "user@example.com",
+            "weight_kg": "75.5", "birth_year": "1992", "sex": "female", "vo2max": "50",
+            "working_set_seconds": "35", "warmup_set_seconds": "20",
+            "rest_between_sets_seconds": "90", "rest_between_exercises_seconds": "150",
+            "hr_fusion_enabled": "on",
+            "update_existing_enabled": "on",
+            "match_window_minutes": "30",
+        }
+        if form_overrides:
+            defaults.update(form_overrides)
+
+        response = client.post("/settings", data=defaults, follow_redirects=False)
+        return response, saved_config
+
+    def test_redirects_to_settings(self, monkeypatch) -> None:
+        client = TestClient(app)
+        response, _ = self._post_settings(client, monkeypatch)
+        assert response.status_code == 303
+
+    def test_saves_user_profile(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch)
+        assert saved["user_profile"]["weight_kg"] == 75.5
+        assert saved["user_profile"]["birth_year"] == 1992
+        assert saved["user_profile"]["sex"] == "female"
+        assert saved["user_profile"]["vo2max"] == 50
+
+    def test_saves_timing(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch)
+        assert saved["timing"]["working_set_seconds"] == 35
+        assert saved["timing"]["warmup_set_seconds"] == 20
+        assert saved["timing"]["rest_between_sets_seconds"] == 90
+        assert saved["timing"]["rest_between_exercises_seconds"] == 150
+
+    def test_saves_api_key_and_email(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch)
+        assert saved["hevy_api_key"] == "test-key"
+        assert saved["garmin_email"] == "user@example.com"
+
+    def test_saves_hr_fusion(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch, {"hr_fusion_enabled": "off"})
+        assert saved["hr_fusion"]["enabled"] is False
+
+    def test_saves_update_existing(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch, {
+            "update_existing_enabled": "on",
+            "match_window_minutes": "45",
+        })
+        assert saved["update_existing"]["enabled"] is True
+        assert saved["update_existing"]["match_window_minutes"] == 45
+
+    def test_update_existing_disabled(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch, {
+            "update_existing_enabled": "off",
+        })
+        assert saved["update_existing"]["enabled"] is False
+
+    def test_match_window_clamped(self, monkeypatch) -> None:
+        client = TestClient(app)
+        _, saved = self._post_settings(client, monkeypatch, {"match_window_minutes": "9999"})
+        assert saved["update_existing"]["match_window_minutes"] == 1440

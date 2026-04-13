@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from liftosaur2garmin import db
-from liftosaur2garmin.config import load_config, update_existing_enabled
+from liftosaur2garmin.config import get_update_existing, load_config
 from liftosaur2garmin.fit import generate_fit
 from liftosaur2garmin.garmin import (
     find_activity_by_start_time,
@@ -256,7 +256,7 @@ def sync(
     garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
     garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
     skip_existing = cfg.get("sync", {}).get("skip_existing", True)
-    update_existing = update_existing_enabled(cfg)
+    update_existing, match_window = get_update_existing(cfg)
 
     if not limit and not fetch_all and not since:
         limit = cfg.get("sync", {}).get("default_limit", 10)
@@ -310,7 +310,7 @@ def sync(
                     continue
 
                 # Dedup: check if activity already exists on Garmin
-                existing_id = find_activity_by_start_time(garmin_client, start_time) if (update_existing and start_time) else None
+                existing_id = find_activity_by_start_time(garmin_client, start_time, window_minutes=match_window) if (update_existing and start_time) else None
                 if existing_id:
                     logger.info("  Activity already on Garmin (%s), updating sets", existing_id)
                     activity_id = existing_id

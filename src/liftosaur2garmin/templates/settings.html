@@ -195,8 +195,13 @@
             </label>
         </div>
         <p class="section-description">
-            When enabled, syncing will check if a matching activity already exists on Garmin (by start time within 30 minutes) and update it with the Liftosaur data instead of creating a duplicate. Disable this to always create new activities.
+            When enabled, syncing will check if a matching activity already exists on Garmin (by start time) and update it with the Liftosaur data instead of creating a duplicate. Disable this to always create new activities.
         </p>
+        <div class="form-group">
+            <label class="form-label" for="match_window_minutes">Match window (minutes)</label>
+            <input class="form-input" type="number" id="match_window_minutes" name="match_window_minutes" min="1" max="1440" value="{{ config.get('update_existing', {}).get('match_window_minutes', 30) }}" style="max-width: 200px;">
+            <div class="form-hint">Activities within this many minutes of the workout start time are considered matches.</div>
+        </div>
     </div>
 
     <!-- Advanced Section (FIT Timing) -->

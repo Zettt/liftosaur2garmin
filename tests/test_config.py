@@ -99,7 +99,7 @@ class TestLoadConfig:
                 if "platform_credentials" in self.query:
                     return []
                 if "app_cache" in self.query:
-                    return [{"key": "update_existing", "value": {"enabled": False}}]
+                    return [{"key": "update_existing", "value": {"enabled": False, "match_window_minutes": 60}}]
                 return []
 
             def __enter__(self):
@@ -127,6 +127,7 @@ class TestLoadConfig:
             config = load_config()
 
         assert config["update_existing"]["enabled"] is False
+        assert config["update_existing"]["match_window_minutes"] == 60
 
 
 class TestIsConfigured:
