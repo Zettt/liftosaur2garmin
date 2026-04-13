@@ -9,20 +9,176 @@ from pathlib import Path
 from typing import Any
 
 from liftosaur2garmin import db
-from liftosaur2garmin.config import load_config
+from liftosaur2garmin.config import get_update_existing, load_config
 from liftosaur2garmin.fit import generate_fit
 from liftosaur2garmin.garmin import (
     find_activity_by_start_time,
     generate_description,
     get_client,
+    get_exercise_sets,
     rename_activity,
     set_description,
+    update_exercise_sets,
     upload_fit,
 )
 from liftosaur2garmin.hevy import HevyClient
 from liftosaur2garmin.mapper import lookup_exercise
 
 logger = logging.getLogger("liftosaur2garmin")
+
+
+def _remove_zero_rep_sets(garmin_sets: list[dict]) -> list[dict]:
+    """Remove ACTIVE sets with 0 reps (false detections from the watch).
+
+    REST sets that immediately follow a removed ACTIVE set are also removed.
+    """
+    to_remove: set[int] = set()
+    for i, gs in enumerate(garmin_sets):
+        if gs.get("setType") == "ACTIVE" and gs.get("repetitionCount", -1) == 0:
+            to_remove.add(i)
+            # Also remove the REST set that follows
+            if i + 1 < len(garmin_sets) and garmin_sets[i + 1].get("setType") == "REST":
+                to_remove.add(i + 1)
+    if to_remove:
+        count = sum(1 for i in to_remove if garmin_sets[i].get("setType") == "ACTIVE")
+        logger.info("  Removing %d zero-rep sets from Garmin", count)
+    return [gs for i, gs in enumerate(garmin_sets) if i not in to_remove]
+
+
+def _group_garmin_sets_by_exercise(garmin_sets: list[dict]) -> list[list[dict]]:
+    """Group consecutive ACTIVE Garmin sets by exercise identity.
+
+    Returns a list of exercise groups, where each group is a list of
+    dicts with 'index' (position in garmin_sets) and 'set' (the set dict).
+    """
+    groups: list[list[dict]] = []
+    current_key: str | None = None
+    current_group: list[dict] = []
+
+    for i, gs in enumerate(garmin_sets):
+        if gs.get("setType") != "ACTIVE":
+            continue
+        exercises = gs.get("exercises") or []
+        key = (
+            f"{exercises[0].get('category')}:{exercises[0].get('name')}"
+            if exercises
+            else f"__unknown_{i}"
+        )
+        if key != current_key:
+            if current_group:
+                groups.append(current_group)
+            current_group = []
+            current_key = key
+        current_group.append({"index": i, "set": gs})
+
+    if current_group:
+        groups.append(current_group)
+
+    return groups
+
+
+def _merge_consecutive_liftosaur_exercises(exercises: list[dict]) -> list[dict]:
+    """Merge consecutive Liftosaur exercises with the same title.
+
+    Liftosaur can split the same exercise into multiple entries (e.g. warmup
+    block + working block). Garmin sees them as one continuous exercise group.
+    """
+    if not exercises:
+        return []
+    merged: list[dict] = []
+    for ex in exercises:
+        title = ex.get("title") or ex.get("name", "")
+        if merged and (merged[-1].get("title") or merged[-1].get("name", "")) == title:
+            merged[-1]["sets"] = merged[-1].get("sets", []) + ex.get("sets", [])
+        else:
+            merged.append({**ex, "sets": list(ex.get("sets", []))})
+    return merged
+
+
+def _match_exercise_sets(
+    garmin_active: list[dict],
+    liftosaur_sets: list[dict],
+) -> list[tuple[dict, dict]] | None:
+    """Match Garmin active sets to Liftosaur sets for a single exercise.
+
+    Tries two strategies:
+      1. All sets (warmup + normal) match 1:1
+      2. Only normal sets match (warmups absent in Garmin)
+
+    Returns list of (garmin_entry, liftosaur_set) pairs, or None if no match.
+    """
+    warmup = [s for s in liftosaur_sets if s.get("type") == "warmup"]
+    normal = [s for s in liftosaur_sets if s.get("type") != "warmup"]
+    all_ordered = warmup + normal
+
+    if len(garmin_active) == len(all_ordered):
+        return list(zip(garmin_active, all_ordered))
+    if len(garmin_active) == len(normal):
+        return list(zip(garmin_active, normal))
+    return None
+
+
+def _apply_liftosaur_values(garmin_sets: list[dict], matches: list[tuple[dict, dict]]) -> None:
+    """Update reps and weight in-place on the garmin_sets list."""
+    for garmin_entry, liftosaur_set in matches:
+        idx = garmin_entry["index"]
+        reps = liftosaur_set.get("reps")
+        weight_kg = liftosaur_set.get("weight_kg")
+        if reps is not None:
+            garmin_sets[idx]["repetitionCount"] = int(reps)
+        if weight_kg is not None:
+            garmin_sets[idx]["weight"] = round(float(weight_kg) * 1000)
+
+
+def update_existing_activity_sets(garmin_client, activity_id: int, workout: dict) -> bool:
+    """Fetch existing Garmin sets, match to Liftosaur, and update reps/weight.
+
+    Returns True if sets were updated, False otherwise.
+    """
+    garmin_sets = get_exercise_sets(garmin_client, activity_id)
+    if not garmin_sets:
+        logger.info("  No exercise sets found on Garmin activity %s", activity_id)
+        return False
+
+    # Remove false-detection sets (0 reps)
+    garmin_sets = _remove_zero_rep_sets(garmin_sets)
+
+    garmin_groups = _group_garmin_sets_by_exercise(garmin_sets)
+    liftosaur_exercises = _merge_consecutive_liftosaur_exercises(workout.get("exercises", []))
+
+    if not liftosaur_exercises:
+        return False
+
+    any_matched = False
+    for ex_idx, liftosaur_ex in enumerate(liftosaur_exercises):
+        ex_name = liftosaur_ex.get("title") or liftosaur_ex.get("name", "Unknown")
+        if ex_idx >= len(garmin_groups):
+            logger.warning("  No Garmin exercise group for Liftosaur exercise #%d '%s'", ex_idx, ex_name)
+            continue
+
+        garmin_group = garmin_groups[ex_idx]
+        liftosaur_sets = liftosaur_ex.get("sets", [])
+        matches = _match_exercise_sets(garmin_group, liftosaur_sets)
+
+        if matches is None:
+            warmup_count = sum(1 for s in liftosaur_sets if s.get("type") == "warmup")
+            normal_count = len(liftosaur_sets) - warmup_count
+            logger.warning(
+                "  Set count mismatch for '%s': Garmin has %d, Liftosaur has %d (%d warmup + %d normal) — skipping",
+                ex_name, len(garmin_group), len(liftosaur_sets), warmup_count, normal_count,
+            )
+            continue
+
+        _apply_liftosaur_values(garmin_sets, matches)
+        any_matched = True
+        logger.info("  Matched %d sets for '%s'", len(matches), ex_name)
+
+    if any_matched:
+        update_exercise_sets(garmin_client, activity_id, garmin_sets)
+        return True
+
+    logger.warning("  No sets could be matched for activity %s", activity_id)
+    return False
 
 
 def fetch_workouts(
@@ -100,6 +256,7 @@ def sync(
     garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
     garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
     skip_existing = cfg.get("sync", {}).get("skip_existing", True)
+    update_existing, match_window = get_update_existing(cfg)
 
     if not limit and not fetch_all and not since:
         limit = cfg.get("sync", {}).get("default_limit", 10)
@@ -153,10 +310,11 @@ def sync(
                     continue
 
                 # Dedup: check if activity already exists on Garmin
-                existing_id = find_activity_by_start_time(garmin_client, start_time) if start_time else None
+                existing_id = find_activity_by_start_time(garmin_client, start_time, window_minutes=match_window) if (update_existing and start_time) else None
                 if existing_id:
-                    logger.info("  Activity already on Garmin (%s), skipping upload", existing_id)
+                    logger.info("  Activity already on Garmin (%s), updating sets", existing_id)
                     activity_id = existing_id
+                    update_existing_activity_sets(garmin_client, activity_id, workout)
                 else:
                     upload_result = upload_fit(garmin_client, fit_path, workout_start=start_time)
                     activity_id = upload_result.get("activity_id")

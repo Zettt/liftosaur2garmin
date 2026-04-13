@@ -623,16 +623,28 @@ class GarminClient:
         )
         return _json_response(response)
 
-    def get_activities(self, start: int = 0, limit: int = 20, activitytype: str | None = None) -> list[Any]:
+    def get_activities(self, start: int = 0, limit: int = 20, activitytype: str | None = None, start_date: str | None = None) -> list[Any]:
         params = {"start": str(start), "limit": str(limit)}
         if activitytype:
             params["activityType"] = str(activitytype)
+        if start_date:
+            params["startDate"] = start_date
+            params["endDate"] = start_date
         response = self.auth.request("GET", self.activities_url, params=params)
         data = _json_response(response)
         return data or []
 
     def get_activity(self, activity_id: str | int) -> dict[str, Any]:
         response = self.auth.request("GET", f"{self.activity_url}/{activity_id}")
+        return _json_response(response)
+
+    def get_exercise_sets(self, activity_id: str | int) -> dict[str, Any]:
+        response = self.auth.request("GET", f"{self.activity_url}/{activity_id}/exerciseSets")
+        return _json_response(response)
+
+    def put_exercise_sets(self, activity_id: str | int, exercise_sets: list[dict[str, Any]]) -> Any:
+        payload = {"activityId": int(activity_id), "exerciseSets": exercise_sets}
+        response = self.auth.request("PUT", f"{self.activity_url}/{activity_id}/exerciseSets", json=payload)
         return _json_response(response)
 
     def get_heart_rates(self, cdate: str) -> dict[str, Any]:
@@ -858,7 +870,7 @@ def upload_fit(client: GarminClient, fit_path: str | Path, workout_start: str | 
 def find_activity_by_start_time(
     client: GarminClient,
     target_start: str,
-    window_minutes: int = 10,
+    window_minutes: int = 30,
 ) -> int | None:
     from datetime import datetime
 
@@ -867,7 +879,8 @@ def find_activity_by_start_time(
     except (ValueError, TypeError):
         return None
     try:
-        activities = _limiter.call(client.get_activities, 0, 10)
+        target_date = target.strftime("%Y-%m-%d")
+        activities = _limiter.call(client.get_activities, 0, 10, start_date=target_date)
     except Exception:
         return None
     closest_id = None
@@ -903,6 +916,17 @@ def set_description(client: GarminClient, activity_id: int, description: str) ->
     client.put_json(url, payload)
     time.sleep(1.0)
     logger.info("  Description set (%d chars)", len(description))
+
+
+def get_exercise_sets(client: GarminClient, activity_id: int) -> list[dict]:
+    data = _limiter.call(client.get_exercise_sets, activity_id)
+    return data.get("exerciseSets", [])
+
+
+def update_exercise_sets(client: GarminClient, activity_id: int, exercise_sets: list[dict]) -> None:
+    _limiter.call(client.put_exercise_sets, activity_id, exercise_sets)
+    time.sleep(1.0)
+    logger.info("  Updated exercise sets for activity %s", activity_id)
 
 
 def upload_image(client: GarminClient, activity_id: int, image_bytes: bytes, filename: str = "image.png") -> None:

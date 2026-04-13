@@ -42,7 +42,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "hr_fusion": {
         "enabled": True,
     },
+    "update_existing": {
+        "enabled": True,
+        "match_window_minutes": 30,
+    },
 }
+
+
+def get_update_existing(config: dict[str, Any] | None = None) -> tuple[bool, int]:
+    """Return (enabled, match_window_minutes) for the update-existing feature."""
+    cfg = config or load_config()
+    ue = cfg.get("update_existing", {})
+    return bool(ue.get("enabled", True)), int(ue.get("match_window_minutes", 30))
 
 
 def load_config() -> dict[str, Any]:
@@ -85,7 +96,10 @@ def load_config() -> dict[str, Any]:
                             elif row["platform"] == "garmin" and creds.get("email"):
                                 config["garmin_email"] = creds["email"]
                         # App settings
-                        cur.execute("SELECT key, value FROM app_cache WHERE key IN ('user_profile', 'timing', 'hr_fusion')")
+                        cur.execute(
+                            "SELECT key, value FROM app_cache "
+                            "WHERE key IN ('user_profile', 'timing', 'hr_fusion', 'update_existing')"
+                        )
                         for row in cur.fetchall():
                             val = row["value"] if isinstance(row["value"], dict) else json.loads(row["value"])
                             if row["key"] in config and isinstance(config[row["key"]], dict):

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from liftosaur2garmin import db
-from liftosaur2garmin.config import is_configured, load_config, save_config
+from liftosaur2garmin.config import get_update_existing, is_configured, load_config, save_config
 from liftosaur2garmin.sync import sync
 
 logger = logging.getLogger("liftosaur2garmin")
@@ -824,6 +824,8 @@ async def settings_save(
     working_set_seconds: int = Form(40), warmup_set_seconds: int = Form(25),
     rest_between_sets_seconds: int = Form(75), rest_between_exercises_seconds: int = Form(120),
     hr_fusion_enabled: str = Form("off"),
+    update_existing_enabled: str = Form("off"),
+    match_window_minutes: int = Form(30),
 ):
     config = load_config()
     if hevy_api_key:
@@ -837,6 +839,9 @@ async def settings_save(
         rest_between_exercises_seconds=rest_between_exercises_seconds,
     )
     config.setdefault("hr_fusion", {})["enabled"] = hr_fusion_enabled == "on"
+    ue = config.setdefault("update_existing", {})
+    ue["enabled"] = update_existing_enabled == "on"
+    ue["match_window_minutes"] = max(1, min(1440, match_window_minutes))
     save_config(config)
     _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
 
@@ -847,6 +852,7 @@ async def settings_save(
             _db.set_app_config("user_profile", config["user_profile"])
             _db.set_app_config("timing", config["timing"])
             _db.set_app_config("hr_fusion", config.get("hr_fusion", {}))
+            _db.set_app_config("update_existing", config.get("update_existing", {}))
         except Exception as e:
             logger.warning("Failed to persist settings to DB: %s", e)
 
@@ -1058,14 +1064,22 @@ async def api_sync_single(request: Request, workout_id: str):
         from liftosaur2garmin.hevy import HevyClient
         from liftosaur2garmin.fit import generate_fit
         from liftosaur2garmin.garmin import get_client, rename_activity, set_description, upload_fit, generate_description, find_activity_by_start_time
+        from liftosaur2garmin.sync import update_existing_activity_sets
         import tempfile
 
         # force_upload=true skips dedup (used by re-sync after edit)
         force_upload = request.query_params.get("force") == "1"
 
         config = load_config()
-        data = HevyClient(api_key=config.get("hevy_api_key")).get_workouts(page=1, page_size=10)
-        workout = next((w for w in data.get("workouts", []) if w["id"] == workout_id), None)
+        client = HevyClient(api_key=config.get("hevy_api_key"))
+        workout = None
+        page = 1
+        while True:
+            data = client.get_workouts(page=page, page_size=10)
+            workout = next((w for w in data.get("workouts", []) if w["id"] == workout_id), None)
+            if workout or page >= data.get("page_count", page):
+                break
+            page += 1
         if not workout:
             return HTMLResponse('<td colspan="5">Workout not found</td>')
 
@@ -1073,16 +1087,18 @@ async def api_sync_single(request: Request, workout_id: str):
         workout_start = workout.get("start_time")
 
         # Dedup: check if activity already exists on Garmin (skip if force)
+        update_existing, match_window = get_update_existing(config)
         existing_id = None
-        if not force_upload and workout_start:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
+        if update_existing and not force_upload and workout_start:
+            existing_id = find_activity_by_start_time(garmin_client, workout_start, window_minutes=match_window)
 
         with tempfile.TemporaryDirectory() as tmp:
             fit_path = f"{tmp}/{workout_id}.fit"
             result = generate_fit(workout, hr_samples=None, output_path=fit_path)
             if existing_id:
                 aid = existing_id
-                logger.info("Activity already on Garmin (%s), skipping upload", aid)
+                logger.info("Activity already on Garmin (%s), updating sets", aid)
+                update_existing_activity_sets(garmin_client, aid, workout)
             else:
                 upload_result = upload_fit(garmin_client, fit_path, workout_start=workout_start)
                 aid = upload_result.get("activity_id")
@@ -1437,6 +1453,7 @@ async def _do_sync_one(request: Request):
     from liftosaur2garmin.hevy import HevyClient
     from liftosaur2garmin.garmin import get_client, upload_fit, rename_activity, set_description, generate_description
     from liftosaur2garmin.fit import generate_fit
+    from liftosaur2garmin.sync import update_existing_activity_sets
     import tempfile
 
     hevy = HevyClient(api_key=hevy_api_key)
@@ -1493,13 +1510,15 @@ async def _do_sync_one(request: Request):
         # Dedup: check if this workout already exists on Garmin before uploading.
         # Prevents duplicates when a prior sync uploaded successfully but crashed
         # before marking the workout as synced in the DB.
+        update_existing, match_window = get_update_existing(config)
         existing_id = None
-        if workout_start:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
+        if update_existing and workout_start:
+            existing_id = find_activity_by_start_time(garmin_client, workout_start, window_minutes=match_window)
 
         if existing_id:
-            logger.info("Activity already on Garmin (%s), skipping upload for %s", existing_id, unsynced["title"])
+            logger.info("Activity already on Garmin (%s), updating sets for %s", existing_id, unsynced["title"])
             aid = existing_id
+            update_existing_activity_sets(garmin_client, aid, unsynced)
             # Still generate FIT to get calorie estimate
             with tempfile.TemporaryDirectory() as tmp:
                 fit_path = f"{tmp}/{unsynced['id']}.fit"
