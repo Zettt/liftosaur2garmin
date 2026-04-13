@@ -1,0 +1,9 @@
+name = "liftosaur2garmin-exchange-di"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Replace the namespace IDs before deploying this worker.
+[[kv_namespaces]]
+binding = "MFA_SESSIONS"
+id = "replace-with-your-kv-namespace-id"
+preview_id = "replace-with-your-preview-kv-namespace-id"

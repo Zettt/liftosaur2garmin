@@ -67,8 +67,11 @@ The main environment variables are:
 
 - `LIFTOSAUR_API_KEY`
 - `GARMIN_EMAIL`
+- `GARMIN_AUTH_WORKER_BASE_URL`
 
 `GARMIN_PASSWORD` is optional. It is still accepted for direct local CLI login, but the primary flow is to connect Garmin once and reuse the saved token file.
+
+`GARMIN_AUTH_WORKER_BASE_URL` is optional. Set it on hosted deployments after you deploy the Cloudflare Worker in [worker-di](./worker-di). When it is present, the hosted setup page can connect to Garmin directly, including 2FA.
 
 Example:
 
@@ -109,6 +112,12 @@ liftosaur2garmin serve
 Then open the local setup page and use `Connect Garmin`.
 
 Hosted deployments use local bootstrap too. Connect Garmin locally first, then upload the exported token file in the hosted setup page.
+
+If `GARMIN_AUTH_WORKER_BASE_URL` is configured on the hosted app, the setup page can also connect Garmin directly:
+
+- enter Garmin email and password on the hosted setup page
+- if Garmin requires 2FA, enter the 6-digit code inline
+- if Garmin rejects the direct login, the page reveals a browser sign-in fallback and keeps token-file upload as a backup path
 
 The Garmin token file can be exported with:
 
@@ -166,6 +175,12 @@ liftosaur2garmin sync --dry-run
 pytest
 ```
 
+Worker tests:
+
+```bash
+node --test worker-di/index.test.js
+```
+
 ## Acknowledgements
 
 This project builds on the open-source work in [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin) by Konstantinos Georgiou. The Garmin sync, FIT generation, and exercise-mapping approach here started from that codebase and was then adapted for Liftosaur.
@@ -174,4 +189,4 @@ This project builds on the open-source work in [`drkostas/hevy2garmin`](https://
 
 - The Liftosaur client normalizes history records into the workout structure expected by the existing Garmin sync pipeline.
 - Exercise mapping still uses the large Hevy-derived Garmin mapping table, with compatibility logic for Liftosaur-style names such as `Bench Press, Barbell`.
-- The hosted setup page does not log into Garmin directly. It imports a token file produced by a local `init` or `serve` flow.
+- Hosted Garmin login can run through the repo-owned Cloudflare Worker in [worker-di](./worker-di). Without `GARMIN_AUTH_WORKER_BASE_URL`, hosted setup falls back to token-file import from a local `init` or `serve` flow.
