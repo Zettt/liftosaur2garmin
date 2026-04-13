@@ -28,13 +28,16 @@ logger = logging.getLogger("liftosaur2garmin")
 
 
 def _remove_zero_rep_sets(garmin_sets: list[dict]) -> list[dict]:
-    """Remove ACTIVE sets with 0 reps (false detections from the watch).
+    """Remove ACTIVE sets with 0 reps and short duration (false detections from the watch).
 
-    REST sets that immediately follow a removed ACTIVE set are also removed.
+    Only removes sets shorter than 10 seconds. REST sets that immediately
+    follow a removed ACTIVE set are also removed.
     """
     to_remove: set[int] = set()
     for i, gs in enumerate(garmin_sets):
-        if gs.get("setType") == "ACTIVE" and gs.get("repetitionCount", -1) == 0:
+        if (gs.get("setType") == "ACTIVE"
+                and gs.get("repetitionCount", -1) == 0
+                and gs.get("duration", 0) < 10):
             to_remove.add(i)
             # Also remove the REST set that follows
             if i + 1 < len(garmin_sets) and garmin_sets[i + 1].get("setType") == "REST":

@@ -45,9 +45,9 @@ def _liftosaur_set(set_type: str, reps: int, weight_kg: float) -> dict:
 
 
 class TestRemoveZeroRepSets:
-    def test_removes_zero_rep_active_and_following_rest(self) -> None:
+    def test_removes_short_zero_rep_active_and_following_rest(self) -> None:
         garmin_sets = [
-            _active_set("CURL", "BICEP_CURL", 0, 0),
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 3.0},
             _rest_set(),
             _active_set("CURL", "BICEP_CURL", 10, 12500),
             _rest_set(),
@@ -56,11 +56,11 @@ class TestRemoveZeroRepSets:
         assert len(result) == 2
         assert result[0]["repetitionCount"] == 10
 
-    def test_removes_multiple_zero_rep_sets(self) -> None:
+    def test_removes_multiple_short_zero_rep_sets(self) -> None:
         garmin_sets = [
-            _active_set("BP", "BENCH", 0, 0),
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 2.0},
             _rest_set(),
-            _active_set("BP", "BENCH", 0, 0),
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 5.0},
             _rest_set(),
             _active_set("BP", "BENCH", 5, 60000),
             _rest_set(),
@@ -68,6 +68,16 @@ class TestRemoveZeroRepSets:
         result = _remove_zero_rep_sets(garmin_sets)
         assert len(result) == 2
         assert result[0]["repetitionCount"] == 5
+
+    def test_preserves_zero_rep_set_with_long_duration(self) -> None:
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 15.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        result = _remove_zero_rep_sets(garmin_sets)
+        assert len(result) == 4
 
     def test_preserves_all_when_no_zero_reps(self) -> None:
         garmin_sets = [
@@ -305,7 +315,7 @@ class TestUpdateExistingActivitySets:
             }],
         }
         garmin_sets = [
-            _active_set("BP", "BENCH", 0, 0),  # zero-rep, should be removed
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 3.0},  # zero-rep + short, should be removed
             _rest_set(),
             _active_set("BP", "BENCH", 10, 60000),
             _rest_set(),
