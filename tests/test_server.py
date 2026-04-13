@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -96,7 +97,6 @@ class TestGarminSetupApis:
             files={"token_file": ("garmin_tokens.json", "{}", "application/json")},
         )
         assert response.status_code == 400
-
 
 class TestSyncOneApi:
     def test_sync_one_uploads_when_update_existing_disabled(self, monkeypatch) -> None:
@@ -294,3 +294,97 @@ class TestSettingsSave:
         client = TestClient(app)
         _, saved = self._post_settings(client, monkeypatch, {"match_window_minutes": "9999"})
         assert saved["update_existing"]["match_window_minutes"] == 1440
+
+    def test_garmin_ticket_rejects_bad_payload(self) -> None:
+        client = TestClient(app)
+        response = client.post("/api/garmin-ticket", json={"tokens": {"di_token": "one"}})
+        assert response.status_code == 400
+        assert response.json()["error"].startswith("Invalid tokens")
+
+    def test_garmin_ticket_stores_valid_payload(self, monkeypatch) -> None:
+        client = TestClient(app)
+        saved: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.load_config",
+            lambda: {"garmin_email": "", "user_profile": {}},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.save_config",
+            lambda config: saved.setdefault("config", config),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "liftosaur2garmin.server._persist_cloud_credentials",
+            lambda **kwargs: saved.setdefault("persist", kwargs),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "liftosaur2garmin.garmin.save_token_payload",
+            lambda payload, **kwargs: saved.setdefault("payload", payload),
+        )
+
+        response = client.post(
+            "/api/garmin-ticket",
+            json={
+                "garmin_email": "user@example.com",
+                "tokens": {
+                    "di_token": "one",
+                    "di_refresh_token": "two",
+                    "di_client_id": "cid",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        assert saved["payload"]["email"] == "user@example.com"
+        assert saved["payload"]["auth"]["di_token"] == "one"
+        assert saved["config"]["garmin_email"] == "user@example.com"
+        assert saved["persist"] == {"garmin_email": "user@example.com"}
+
+    def test_setup_cloud_with_worker_renders_inline_login(self, monkeypatch) -> None:
+        client = TestClient(app)
+
+        monkeypatch.setenv("GARMIN_AUTH_WORKER_BASE_URL", "https://worker.example")
+        monkeypatch.setattr("liftosaur2garmin.server.load_config", lambda: {"garmin_email": "", "user_profile": {}}, raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: "postgres://example", raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server._has_garmin_tokens", lambda config=None: False, raising=False)
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert "https://worker.example" in response.text
+        assert "garminConnect()" in response.text
+        assert "garminSubmitMfa()" in response.text
+
+    def test_setup_cloud_without_worker_renders_token_upload(self, monkeypatch) -> None:
+        client = TestClient(app)
+
+        monkeypatch.delenv("GARMIN_AUTH_WORKER_BASE_URL", raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server.load_config", lambda: {"garmin_email": "", "user_profile": {}}, raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: "postgres://example", raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server._has_garmin_tokens", lambda config=None: False, raising=False)
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert "Upload Garmin Token File" in response.text
+        assert "garminConnect()" not in response.text
+
+    def test_settings_cloud_with_worker_renders_reconnect_ui(self, monkeypatch) -> None:
+        client = TestClient(app)
+
+        monkeypatch.setenv("GARMIN_AUTH_WORKER_BASE_URL", "https://worker.example")
+        monkeypatch.setattr("liftosaur2garmin.server.is_configured", lambda: True, raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server.load_config", lambda: {"garmin_email": "", "user_profile": {}, "hr_fusion": {}}, raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: "postgres://example", raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server._has_garmin_tokens", lambda config=None: False, raising=False)
+        monkeypatch.setattr("liftosaur2garmin.server._get_unmapped_exercises", lambda: [], raising=False)
+
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        assert "https://worker.example" in response.text
+        assert "Connect Garmin" in response.text

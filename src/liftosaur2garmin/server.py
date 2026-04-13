@@ -108,6 +108,23 @@ def _persist_cloud_credentials(hevy_api_key: str = "", garmin_email: str = "") -
         logger.warning("Failed to persist cloud credentials: %s", exc)
 
 
+def _get_garmin_auth_worker_base_url() -> str:
+    return os.environ.get("GARMIN_AUTH_WORKER_BASE_URL", "").strip().rstrip("/")
+
+
+def _build_garmin_di_token_payload(tokens: dict[str, str], email: str = "") -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "kind": "garmin_native_auth",
+        "email": email,
+        "auth": {
+            "di_token": tokens["di_token"],
+            "di_refresh_token": tokens["di_refresh_token"],
+            "di_client_id": tokens["di_client_id"],
+        },
+    }
+
+
 app = FastAPI(title="liftosaur2garmin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -359,6 +376,7 @@ async def check_setup(request: Request, call_next):
         "/api/cron/sync",
         "/api/setup-actions",
         "/api/validate-hevy",
+        "/api/garmin-ticket",
         "/api/garmin/login/start",
         "/api/garmin/login/finish",
         "/api/garmin/import-token-file",
@@ -426,10 +444,14 @@ async def dashboard(request: Request):
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request):
     config = load_config()
+    is_cloud = bool(db.get_database_url())
+    garmin_auth_worker_base_url = _get_garmin_auth_worker_base_url()
     return _render(
         "setup.html",
         config=config,
-        is_cloud=bool(db.get_database_url()),
+        is_cloud=is_cloud,
+        use_cloud_inline_garmin_login=bool(is_cloud and garmin_auth_worker_base_url),
+        garmin_auth_worker_base_url=garmin_auth_worker_base_url,
         garmin_connected=_has_garmin_tokens(config),
         setup_saved=request.query_params.get("saved") == "1",
     )
@@ -518,6 +540,49 @@ async def api_garmin_login_finish(request: Request):
     except Exception as exc:
         logger.warning("Garmin login finish failed: %s", exc)
         return JSONResponse({"error": _garmin_auth_error(exc)}, status_code=400)
+
+
+@app.post("/api/garmin-ticket")
+async def api_garmin_ticket(request: Request):
+    from liftosaur2garmin.garmin import save_token_payload
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
+
+    tokens = body.get("tokens")
+    if not isinstance(tokens, dict) or not all(
+        isinstance(tokens.get(key), str) and tokens.get(key).strip()
+        for key in ("di_token", "di_refresh_token", "di_client_id")
+    ):
+        return JSONResponse(
+            {"error": "Invalid tokens: expected di_token/di_refresh_token/di_client_id"},
+            status_code=400,
+        )
+
+    garmin_email = str(body.get("garmin_email", "")).strip()
+    config = load_config()
+    email = garmin_email or str(config.get("garmin_email", "")).strip()
+    payload = _build_garmin_di_token_payload(
+        {
+            "di_token": tokens["di_token"].strip(),
+            "di_refresh_token": tokens["di_refresh_token"].strip(),
+            "di_client_id": tokens["di_client_id"].strip(),
+        },
+        email=email,
+    )
+
+    try:
+        save_token_payload(payload)
+        if garmin_email:
+            config["garmin_email"] = garmin_email
+            save_config(config)
+            _persist_cloud_credentials(garmin_email=garmin_email)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        logger.warning("Garmin token ingest failed: %s", exc)
+        return JSONResponse({"error": _garmin_auth_error(exc)}, status_code=500)
 
 
 @app.post("/api/garmin/import-token-file")
@@ -801,6 +866,8 @@ async def history_page(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     config = load_config()
+    is_cloud = bool(db.get_database_url())
+    garmin_auth_worker_base_url = _get_garmin_auth_worker_base_url()
     unmapped: dict[str, int] = {}
     try:
         # Use cached unmapped from DB (no Hevy API call)
@@ -813,7 +880,9 @@ async def settings_page(request: Request):
         config=config,
         unmapped=sorted(unmapped.items(), key=lambda x: -x[1]),
         garmin_connected=_has_garmin_tokens(config),
-        is_cloud=bool(db.get_database_url()),
+        is_cloud=is_cloud,
+        use_cloud_inline_garmin_login=bool(is_cloud and garmin_auth_worker_base_url),
+        garmin_auth_worker_base_url=garmin_auth_worker_base_url,
     )
 
 
