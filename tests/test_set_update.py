@@ -52,7 +52,7 @@ class TestRemoveZeroRepSets:
             _active_set("CURL", "BICEP_CURL", 10, 12500),
             _rest_set(),
         ]
-        result = _remove_zero_rep_sets(garmin_sets)
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
         assert len(result) == 2
         assert result[0]["repetitionCount"] == 10
 
@@ -65,7 +65,7 @@ class TestRemoveZeroRepSets:
             _active_set("BP", "BENCH", 5, 60000),
             _rest_set(),
         ]
-        result = _remove_zero_rep_sets(garmin_sets)
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
         assert len(result) == 2
         assert result[0]["repetitionCount"] == 5
 
@@ -76,7 +76,7 @@ class TestRemoveZeroRepSets:
             _active_set("CURL", "BICEP_CURL", 10, 12500),
             _rest_set(),
         ]
-        result = _remove_zero_rep_sets(garmin_sets)
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
         assert len(result) == 4
 
     def test_preserves_all_when_no_zero_reps(self) -> None:
@@ -84,11 +84,217 @@ class TestRemoveZeroRepSets:
             _active_set("CURL", "BICEP_CURL", 10, 12500),
             _rest_set(),
         ]
-        result = _remove_zero_rep_sets(garmin_sets)
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
         assert len(result) == 2
 
     def test_empty_list(self) -> None:
-        assert _remove_zero_rep_sets([]) == []
+        assert _remove_zero_rep_sets([], {"exercises": []}) == []
+
+    def test_preserves_zero_rep_set_when_liftosaur_has_matching_zero_rep(self) -> None:
+        """If Liftosaur has a 0-rep set for this exercise, keep the Garmin 0-rep set too."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 3.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {"title": "Bicep Curl", "sets": [_liftosaur_set("normal", 0, 0), _liftosaur_set("normal", 10, 12.5)]},
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        assert len(result) == 4
+
+    def test_removes_extras_keeps_liftosaur_matching_zero_reps(self) -> None:
+        """Mixed case: Liftosaur has 1 zero-rep; Garmin has 2 short zero-reps — keep first, remove rest."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 2.0},
+            _rest_set(),
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 5.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {"title": "Bicep Curl", "sets": [_liftosaur_set("normal", 0, 0), _liftosaur_set("normal", 10, 12.5)]},
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        # First Garmin 0-rep (2.0s) kept to match Liftosaur's 0-rep (position 0); second (5.0s) removed
+        assert len(result) == 4
+        active_durations = [s.get("duration") for s in result if s.get("setType") == "ACTIVE"]
+        assert 2.0 in active_durations
+        assert 5.0 not in active_durations
+
+    def test_per_exercise_independent_cleanup(self) -> None:
+        """Cleanup is per-exercise: one exercise's 0-rep count doesn't affect another."""
+        garmin_sets = [
+            # Curl: 1 short 0-rep (false detection) + 1 real
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 2.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+            # Bench: 1 short 0-rep (intentional — matches Liftosaur) + 1 real
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 3.0},
+            _rest_set(),
+            _active_set("BP", "BENCH", 5, 60000),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {"title": "Bicep Curl", "sets": [_liftosaur_set("normal", 10, 12.5)]},
+                {"title": "Bench Press", "sets": [_liftosaur_set("normal", 0, 60), _liftosaur_set("normal", 5, 60)]},
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        # Curl false detection removed (+ following rest); bench 0-rep kept
+        assert len(result) == 6
+
+    def test_boundary_10s_duration_is_preserved(self) -> None:
+        """A 0-rep set with exactly 10s duration is NOT a false-detection candidate."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 10.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
+        assert len(result) == 4
+
+    def test_long_zero_rep_consumes_liftosaur_slot(self) -> None:
+        """Long-duration 0-rep Garmin sets also pair with Liftosaur 0-rep sets in order."""
+        garmin_sets = [
+            # First 0-rep is long (assumed legit) — consumes Liftosaur's single 0-rep slot
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 20.0},
+            _rest_set(),
+            # Second 0-rep is short and has no Liftosaur slot left — remove it
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 2.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {"title": "Bicep Curl", "sets": [_liftosaur_set("normal", 0, 0), _liftosaur_set("normal", 10, 12.5)]},
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        # The long 20s 0-rep is kept; the short 2s 0-rep is removed (+ following REST)
+        assert len(result) == 4
+        active_durations = [s.get("duration") for s in result if s.get("setType") == "ACTIVE"]
+        assert 20.0 in active_durations
+        assert 2.0 not in active_durations
+
+    def test_liftosaur_has_more_zero_reps_than_garmin(self) -> None:
+        """If Liftosaur has more 0-rep sets than Garmin, nothing is removed."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 2.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {
+                    "title": "Bicep Curl",
+                    "sets": [
+                        _liftosaur_set("normal", 0, 0),
+                        _liftosaur_set("normal", 0, 0),
+                        _liftosaur_set("normal", 0, 0),
+                    ],
+                },
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        assert len(result) == 4
+
+    def test_trailing_zero_rep_without_rest(self) -> None:
+        """A 0-rep ACTIVE with no trailing REST is still removed (no REST to also remove)."""
+        garmin_sets = [
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 3.0},
+        ]
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
+        assert len(result) == 2
+        assert all(gs.get("repetitionCount") != 0 for gs in result if gs.get("setType") == "ACTIVE")
+
+    def test_zero_rep_not_followed_by_rest(self) -> None:
+        """If the next set after a removed 0-rep is ACTIVE (not REST), only the 0-rep is removed."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 3.0},
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
+        # Only the 0-rep ACTIVE is removed; the following ACTIVE is kept
+        assert len(result) == 2
+        assert result[0].get("repetitionCount") == 10
+        assert result[1].get("setType") == "REST"
+
+    def test_no_liftosaur_exercise_for_garmin_group(self) -> None:
+        """Garmin has an exercise group but Liftosaur has no matching exercise — treat all 0-reps as extras."""
+        garmin_sets = [
+            {**_active_set("CURL", "BICEP_CURL", 0, 0), "duration": 2.0},
+            _rest_set(),
+            _active_set("CURL", "BICEP_CURL", 10, 12500),
+            _rest_set(),
+        ]
+        # Empty exercise list — no corresponding Liftosaur exercise
+        result = _remove_zero_rep_sets(garmin_sets, {"exercises": []})
+        assert len(result) == 2
+        assert result[0].get("repetitionCount") == 10
+
+    def test_multiple_zero_reps_all_matching_liftosaur(self) -> None:
+        """Liftosaur has multiple 0-rep sets; all Garmin 0-reps match in order — none removed."""
+        garmin_sets = [
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 2.0},
+            _rest_set(),
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 3.0},
+            _rest_set(),
+            {**_active_set("BP", "BENCH", 0, 0), "duration": 4.0},
+            _rest_set(),
+            _active_set("BP", "BENCH", 5, 60000),
+            _rest_set(),
+        ]
+        workout = {
+            "exercises": [
+                {
+                    "title": "Bench Press",
+                    "sets": [
+                        _liftosaur_set("normal", 0, 60),
+                        _liftosaur_set("normal", 0, 60),
+                        _liftosaur_set("normal", 0, 60),
+                        _liftosaur_set("normal", 5, 60),
+                    ],
+                },
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        assert len(result) == 8
+
+    def test_merged_consecutive_liftosaur_exercises_counted_together(self) -> None:
+        """Liftosaur splits same exercise into warmup + working blocks — their 0-reps combine."""
+        garmin_sets = [
+            {**_active_set("SQ", "SQUAT", 0, 0), "duration": 2.0},
+            _rest_set(),
+            {**_active_set("SQ", "SQUAT", 0, 0), "duration": 3.0},
+            _rest_set(),
+            _active_set("SQ", "SQUAT", 5, 80000),
+            _rest_set(),
+        ]
+        # Two Liftosaur entries with the same title — should be merged into 2 total 0-rep sets
+        workout = {
+            "exercises": [
+                {"title": "Squat", "sets": [_liftosaur_set("warmup", 0, 0)]},
+                {"title": "Squat", "sets": [_liftosaur_set("normal", 0, 80), _liftosaur_set("normal", 5, 80)]},
+            ],
+        }
+        result = _remove_zero_rep_sets(garmin_sets, workout)
+        # Both Garmin 0-reps kept (each matches one from the merged Liftosaur block)
+        assert len(result) == 6
 
 
 class TestGroupGarminSetsByExercise:

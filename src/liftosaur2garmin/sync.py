@@ -27,21 +27,44 @@ from liftosaur2garmin.mapper import lookup_exercise
 logger = logging.getLogger("liftosaur2garmin")
 
 
-def _remove_zero_rep_sets(garmin_sets: list[dict]) -> list[dict]:
-    """Remove ACTIVE sets with 0 reps and short duration (false detections from the watch).
+def _remove_zero_rep_sets(garmin_sets: list[dict], workout: dict) -> list[dict]:
+    """Remove ACTIVE sets with 0 reps that look like false watch detections.
 
-    Only removes sets shorter than 10 seconds. REST sets that immediately
-    follow a removed ACTIVE set are also removed.
+    A 0-rep set is a false-detection candidate if it's short (<10s) and not
+    present in the Liftosaur exercise. Per exercise, we walk Garmin's sets
+    in order and pair each 0-rep Garmin set with a 0-rep Liftosaur set.
+
+    The first K Garmin 0-rep sets are kept (matching Liftosaur's K 0-rep sets
+    in order). Any further 0-rep Garmin sets are removed if they qualify as short.
+    REST sets that immediately follow a removed ACTIVE set are also removed.
     """
+    garmin_groups = _group_garmin_sets_by_exercise(garmin_sets)
+    liftosaur_exercises = _merge_consecutive_liftosaur_exercises(workout.get("exercises", []))
+
     to_remove: set[int] = set()
-    for i, gs in enumerate(garmin_sets):
-        if (gs.get("setType") == "ACTIVE"
-                and gs.get("repetitionCount", -1) == 0
-                and gs.get("duration", 0) < 10):
-            to_remove.add(i)
-            # Also remove the REST set that follows
-            if i + 1 < len(garmin_sets) and garmin_sets[i + 1].get("setType") == "REST":
-                to_remove.add(i + 1)
+    for ex_idx, group in enumerate(garmin_groups):
+        liftosaur_zero_count = 0
+        if ex_idx < len(liftosaur_exercises):
+            liftosaur_zero_count = sum(
+                1 for s in liftosaur_exercises[ex_idx].get("sets", [])
+                if s.get("reps") == 0
+            )
+
+        matched = 0
+        for entry in group:
+            gs = entry["set"]
+            if gs.get("repetitionCount", -1) != 0:
+                continue
+            if matched < liftosaur_zero_count:
+                matched += 1
+                continue
+            if gs.get("duration", 0) >= 10:
+                continue
+            idx = entry["index"]
+            to_remove.add(idx)
+            if idx + 1 < len(garmin_sets) and garmin_sets[idx + 1].get("setType") == "REST":
+                to_remove.add(idx + 1)
+
     if to_remove:
         count = sum(1 for i in to_remove if garmin_sets[i].get("setType") == "ACTIVE")
         logger.info("  Removing %d zero-rep sets from Garmin", count)
@@ -144,7 +167,7 @@ def update_existing_activity_sets(garmin_client, activity_id: int, workout: dict
         return False
 
     # Remove false-detection sets (0 reps)
-    garmin_sets = _remove_zero_rep_sets(garmin_sets)
+    garmin_sets = _remove_zero_rep_sets(garmin_sets, workout)
 
     garmin_groups = _group_garmin_sets_by_exercise(garmin_sets)
     liftosaur_exercises = _merge_consecutive_liftosaur_exercises(workout.get("exercises", []))
