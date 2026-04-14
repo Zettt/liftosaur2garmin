@@ -98,6 +98,41 @@ class TestGarminSetupApis:
         )
         assert response.status_code == 400
 
+
+class TestFavicon:
+    def test_favicon_ico_is_served(self) -> None:
+        client = TestClient(app)
+
+        response = client.get("/favicon.ico")
+
+        assert response.status_code == 200
+
+    def test_setup_includes_favicon_links(self, monkeypatch) -> None:
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.load_config",
+            lambda: {"garmin_email": "", "user_profile": {}},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.db.get_database_url",
+            lambda: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "liftosaur2garmin.server._has_garmin_tokens",
+            lambda config=None: False,
+            raising=False,
+        )
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in response.text
+        assert '<link rel="alternate icon" href="/favicon.ico" sizes="any">' in response.text
+
+
 class TestSyncOneApi:
     def test_sync_one_uploads_when_update_existing_disabled(self, monkeypatch) -> None:
         client = TestClient(app)
