@@ -26,6 +26,7 @@ logger = logging.getLogger("liftosaur2garmin")
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
+FAVICON_ICO_PATH = STATIC_DIR / "favicon.ico"
 
 
 def _get_cat_names() -> dict[int, str]:
@@ -127,6 +128,11 @@ def _build_garmin_di_token_payload(tokens: dict[str, str], email: str = "") -> d
 
 app = FastAPI(title="liftosaur2garmin", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico() -> FileResponse:
+    return FileResponse(FAVICON_ICO_PATH, media_type="image/vnd.microsoft.icon")
 
 
 # ── Auto-sync state ─────────────────────────────────────────────────────────
