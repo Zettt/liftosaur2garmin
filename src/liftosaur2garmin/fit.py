@@ -1,6 +1,6 @@
-"""Generate strength-training FIT files from Hevy workout data.
+"""Generate strength-training FIT files from Liftosaur workout data.
 
-Merges Hevy exercise/set data with heart-rate samples (from Garmin daily
+Merges Liftosaur exercise/set data with heart-rate samples (from Garmin daily
 monitoring or a static fallback) into a valid .fit file that can be
 uploaded to Garmin Connect.
 """
@@ -121,7 +121,7 @@ def _calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, 
 # ---------------------------------------------------------------------------
 
 def generate_fit(
-    hevy_workout: dict,
+    workout: dict,
     hr_samples: list[int] | None,
     output_path: str,
     profile: dict | None = None,
@@ -130,8 +130,8 @@ def generate_fit(
 
     Parameters
     ----------
-    hevy_workout:
-        Hevy workout dict with exercises and sets.
+    workout:
+        Liftosaur workout dict with exercises and sets.
     hr_samples:
         Heart-rate samples to embed. Can come from Garmin daily monitoring,
         or be a synthetic list (e.g. [90]*30 for static fallback).
@@ -151,8 +151,8 @@ def generate_fit(
     p = _get_profile(profile)
 
     # -- Resolve timing --
-    start_dt = _parse_timestamp(hevy_workout["start_time"])
-    end_dt = _parse_timestamp(hevy_workout["end_time"])
+    start_dt = _parse_timestamp(workout["start_time"])
+    end_dt = _parse_timestamp(workout["end_time"])
     duration_s = (end_dt - start_dt).total_seconds()
 
     start_ms = _ms(start_dt)
@@ -163,7 +163,7 @@ def generate_fit(
     calories = _calc_calories(hr_samples, duration_s, workout_year, p)
 
     # -- Gather exercises and compute timing --
-    exercises = hevy_workout.get("exercises", [])
+    exercises = workout.get("exercises", [])
     num_exercises = len(exercises)
 
     # Count all sets and compute ideal (unscaled) duration

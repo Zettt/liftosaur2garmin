@@ -34,7 +34,7 @@ class LiftosaurClient:
     ) -> None:
         load_local_env()
         self.base_url = (base_url or os.environ.get("LIFTOSAUR_API_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
-        key = api_key or os.environ.get("LIFTOSAUR_API_KEY", "") or os.environ.get("HEVY_API_KEY", "")
+        key = api_key or os.environ.get("LIFTOSAUR_API_KEY", "")
         if not key:
             raise ValueError("Liftosaur API key required. Pass api_key= or set LIFTOSAUR_API_KEY.")
 
@@ -167,7 +167,3 @@ class LiftosaurClient:
         if "data" in data and isinstance(data["data"], dict):
             return data["data"]
         return data
-
-
-HevyAuthError = LiftosaurAuthError
-HevyClient = LiftosaurClient

@@ -141,13 +141,8 @@
                 {{ w.start_time[:10] }} at {{ w.start_time[11:16] }}
                 &middot; {{ w.exercises|length }} exercises
             </div>
-            <!-- Source links -->
+            <!-- Garmin link -->
             <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                <a href="https://hevy.com/workout/{{ w.id }}" target="_blank" rel="noopener"
-                   style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; background: rgba(99,102,241,0.12); color: #818cf8; text-decoration: none;">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    Liftosaur
-                </a>
                 {% if w.garmin_match and w.garmin_match.garmin_id %}
                 <a href="https://connect.garmin.com/modern/activity/{{ w.garmin_match.garmin_id }}" target="_blank" rel="noopener"
                    style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; background: rgba(0,135,90,0.12); color: #34d399; text-decoration: none;">
@@ -325,12 +320,12 @@
 <script>
 const hrChartCache = {};
 
-async function loadHRChart(hevyId, summaryEl) {
-    const container = document.getElementById('hr-chart-' + hevyId);
-    if (hrChartCache[hevyId]) return; // already loaded
+async function loadHRChart(workoutId, summaryEl) {
+    const container = document.getElementById('hr-chart-' + workoutId);
+    if (hrChartCache[workoutId]) return; // already loaded
 
     try {
-        const resp = await fetch('/api/workout/' + hevyId + '/hr');
+        const resp = await fetch('/api/workout/' + workoutId + '/hr');
         if (!resp.ok) {
             const err = await resp.json();
             container.innerHTML = '<p style="color: var(--text-muted); font-size: 13px; padding: 12px 0;">No HR data available' + (err.error ? ': ' + err.error : '') + '</p>';
@@ -359,11 +354,11 @@ async function loadHRChart(hevyId, summaryEl) {
         legend += '</div>';
 
         container.innerHTML = '<div style="font-size: 13px; margin-bottom: 8px;">' + summary + '</div>'
-            + '<div style="position: relative; height: 180px;"><canvas id="hr-canvas-' + hevyId + '"></canvas></div>'
+            + '<div style="position: relative; height: 180px;"><canvas id="hr-canvas-' + workoutId + '"></canvas></div>'
             + legend;
 
         // Render chart
-        const canvas = document.getElementById('hr-canvas-' + hevyId);
+        const canvas = document.getElementById('hr-canvas-' + workoutId);
         const ctx = canvas.getContext('2d');
 
         // Convert HR samples to chart data
@@ -464,13 +459,13 @@ async function loadHRChart(hevyId, summaryEl) {
             }
         });
 
-        hrChartCache[hevyId] = true;
+        hrChartCache[workoutId] = true;
     } catch (e) {
         container.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">Failed to load HR data: ' + e.message + '</p>';
     }
 }
 
-async function resyncWorkout(hevyId, btn) {
+async function resyncWorkout(workoutId, btn) {
     if (!confirm('Re-sync this workout? The old Garmin activity will be deleted and a fresh one uploaded with the latest Liftosaur data.')) return;
     btn.disabled = true;
     btn.textContent = 'Re-syncing…';
@@ -478,11 +473,11 @@ async function resyncWorkout(hevyId, btn) {
         // Step 1: unsync + delete old Garmin activity
         const form = new FormData();
         form.append('delete_garmin', 'true');
-        const unsyncResp = await fetch('/api/unsync/' + hevyId, { method: 'POST', body: form });
+        const unsyncResp = await fetch('/api/unsync/' + workoutId, { method: 'POST', body: form });
         const unsyncData = await unsyncResp.json();
         if (!unsyncData.ok) { alert('Unsync failed: ' + (unsyncData.error || 'Unknown')); btn.disabled = false; btn.textContent = 'Re-sync'; return; }
         // Step 2: re-sync with force=1 (bypass dedup check)
-        const syncResp = await fetch('/api/sync/' + hevyId + '?force=1', { method: 'POST' });
+        const syncResp = await fetch('/api/sync/' + workoutId + '?force=1', { method: 'POST' });
         if (syncResp.ok) { window.location.reload(); }
         else { alert('Re-sync upload failed. The workout is now pending — try syncing from the dashboard.'); window.location.reload(); }
     } catch (e) {
@@ -492,13 +487,13 @@ async function resyncWorkout(hevyId, btn) {
     }
 }
 
-async function unsyncWorkout(hevyId, btn) {
+async function unsyncWorkout(workoutId, btn) {
     if (!confirm('Remove this sync record? The workout will re-appear as "pending" and can be synced again.\n\nThe Garmin activity won\'t be deleted — manage that from Garmin Connect if needed.')) return;
     btn.disabled = true;
     btn.textContent = 'Removing…';
     try {
         const form = new FormData();
-        const resp = await fetch('/api/unsync/' + hevyId, { method: 'POST', body: form });
+        const resp = await fetch('/api/unsync/' + workoutId, { method: 'POST', body: form });
         const data = await resp.json();
         if (data.ok) {
             window.location.reload();

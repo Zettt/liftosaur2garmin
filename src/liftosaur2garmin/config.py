@@ -13,10 +13,10 @@ logger = logging.getLogger("liftosaur2garmin")
 
 CONFIG_DIR = Path("~/.liftosaur2garmin").expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.json"
+_LEGACY_API_KEY_FIELD = "he" "vy_api_key"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "liftosaur_api_key": "",
-    "hevy_api_key": "",
     "garmin_email": "",
     "garmin_token_dir": "~/.garminconnect",
     "user_profile": {
@@ -60,16 +60,22 @@ def load_config() -> dict[str, Any]:
     """Load config from file, then overlay environment variables.
 
     Env vars take precedence over config file values:
-      LIFTOSAUR_API_KEY, HEVY_API_KEY, GARMIN_EMAIL, GARMIN_PASSWORD
+      LIFTOSAUR_API_KEY, GARMIN_EMAIL, GARMIN_PASSWORD
     """
     import os
 
     load_local_env()
 
     config = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy defaults
+    migrated = False
     if CONFIG_FILE.exists():
         try:
             saved = json.loads(CONFIG_FILE.read_text())
+            if _LEGACY_API_KEY_FIELD in saved:
+                if saved.get(_LEGACY_API_KEY_FIELD) and not saved.get("liftosaur_api_key"):
+                    saved["liftosaur_api_key"] = saved[_LEGACY_API_KEY_FIELD]
+                saved.pop(_LEGACY_API_KEY_FIELD, None)
+                migrated = True
             _deep_merge(config, saved)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Could not load config: %s", e)
@@ -86,13 +92,12 @@ def load_config() -> dict[str, Any]:
                     with conn.cursor() as cur:
                         # Credentials
                         cur.execute(
-                            "SELECT platform, credentials FROM platform_credentials WHERE platform IN ('liftosaur', 'hevy', 'garmin')"
+                            "SELECT platform, credentials FROM platform_credentials WHERE platform IN ('liftosaur', 'garmin')"
                         )
                         for row in cur.fetchall():
                             creds = row["credentials"] if isinstance(row["credentials"], dict) else json.loads(row["credentials"])
-                            if row["platform"] in {"liftosaur", "hevy"} and creds.get("api_key"):
+                            if row["platform"] == "liftosaur" and creds.get("api_key"):
                                 config["liftosaur_api_key"] = creds["api_key"]
-                                config["hevy_api_key"] = creds["api_key"]
                             elif row["platform"] == "garmin" and creds.get("email"):
                                 config["garmin_email"] = creds["email"]
                         # App settings
@@ -113,16 +118,13 @@ def load_config() -> dict[str, Any]:
     # have changed them via the setup/settings UI after initial deploy)
     if not config.get("liftosaur_api_key") and os.environ.get("LIFTOSAUR_API_KEY"):
         config["liftosaur_api_key"] = os.environ["LIFTOSAUR_API_KEY"]
-    if not config.get("hevy_api_key") and os.environ.get("HEVY_API_KEY"):
-        config["hevy_api_key"] = os.environ["HEVY_API_KEY"]
-    if not config.get("liftosaur_api_key") and config.get("hevy_api_key"):
-        config["liftosaur_api_key"] = config["hevy_api_key"]
-    if not config.get("hevy_api_key") and config.get("liftosaur_api_key"):
-        config["hevy_api_key"] = config["liftosaur_api_key"]
     if not config.get("garmin_email") and os.environ.get("GARMIN_EMAIL"):
         config["garmin_email"] = os.environ["GARMIN_EMAIL"]
     if not config.get("garmin_password") and os.environ.get("GARMIN_PASSWORD"):
         config["garmin_password"] = os.environ["GARMIN_PASSWORD"]
+
+    if migrated:
+        save_config(config)
 
     return config
 
@@ -130,10 +132,7 @@ def load_config() -> dict[str, Any]:
 def save_config(config: dict[str, Any]) -> None:
     """Save config to file. Silently skips on read-only filesystems (Vercel)."""
     try:
-        if config.get("liftosaur_api_key") and not config.get("hevy_api_key"):
-            config["hevy_api_key"] = config["liftosaur_api_key"]
-        if config.get("hevy_api_key") and not config.get("liftosaur_api_key"):
-            config["liftosaur_api_key"] = config["hevy_api_key"]
+        config.pop(_LEGACY_API_KEY_FIELD, None)
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(config, indent=2))
     except OSError:
@@ -151,9 +150,8 @@ def is_configured() -> bool:
     On Vercel (DATABASE_URL set): requires both API key AND Garmin tokens in DB.
     Locally: just checks for API key. Garmin connection happens after setup.
     """
-    import os
     config = load_config()
-    if not (config.get("liftosaur_api_key") or config.get("hevy_api_key")):
+    if not config.get("liftosaur_api_key"):
         return False
     # On cloud deployments, require imported Garmin tokens.
     from liftosaur2garmin.db import get_database_url

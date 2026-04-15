@@ -1,8 +1,8 @@
-"""Map Hevy exercise names to Garmin FIT category/subcategory IDs.
+"""Map workout exercise names to Garmin FIT category/subcategory IDs.
 
 Each Garmin strength exercise is identified by a (category, subcategory) pair
 of 16-bit unsigned integers defined in the FIT SDK.  This module provides a
-static lookup table that translates free-text Hevy exercise names into those
+static lookup table that translates free-text exercise names into those
 numeric IDs so that uploaded workouts show the correct exercise in Garmin
 Connect.
 
@@ -19,10 +19,10 @@ FIT SDK exercise categories used:
 from __future__ import annotations
 
 # --------------------------------------------------------------------------- #
-# Mapping: Hevy exercise name  ->  (FIT exercise category, subcategory)
+# Mapping: exercise name  ->  (FIT exercise category, subcategory)
 # --------------------------------------------------------------------------- #
 
-HEVY_TO_GARMIN: dict[str, tuple[int, int]] = {
+EXERCISE_TO_GARMIN: dict[str, tuple[int, int]] = {
 
     # ======================================================================= #
     #  CHEST – Bench Press (category 0)
@@ -640,14 +640,15 @@ def _ensure_custom_loaded() -> None:
         return
     _custom_loaded = True
 
-    # Try DB first (cloud deployments)
+    # Try DB first.
     try:
-        from liftosaur2garmin.db import get_database_url, get_db
-        if get_database_url():
-            _db = get_db()
-            if hasattr(_db, 'get_custom_mappings'):
-                for name, (cat, subcat) in _db.get_custom_mappings().items():
-                    _custom_mappings[name] = (cat, subcat)
+        from liftosaur2garmin.db import get_db
+
+        database = get_db()
+        if hasattr(database, "get_custom_mappings"):
+            for name, (cat, subcat) in database.get_custom_mappings().items():
+                _custom_mappings[name] = (cat, subcat)
+            if _custom_mappings:
                 return
     except Exception:
         pass
@@ -665,8 +666,19 @@ def _ensure_custom_loaded() -> None:
             pass
 
 
-def save_custom_mapping(hevy_name: str, category: int, subcategory: int) -> None:
+def save_custom_mapping(exercise_name: str, category: int, subcategory: int) -> None:
     """Save a custom exercise mapping to disk."""
+    try:
+        from liftosaur2garmin.db import get_db
+
+        database = get_db()
+        if hasattr(database, "save_custom_mapping"):
+            database.save_custom_mapping(exercise_name, category, subcategory)
+            _custom_mappings[exercise_name] = (category, subcategory)
+            return
+    except Exception:
+        pass
+
     import json
     from pathlib import Path
     path = Path("~/.liftosaur2garmin/custom_mappings.json").expanduser()
@@ -677,30 +689,30 @@ def save_custom_mapping(hevy_name: str, category: int, subcategory: int) -> None
             existing = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    existing[hevy_name] = [category, subcategory]
+    existing[exercise_name] = [category, subcategory]
     path.write_text(json.dumps(existing, indent=2))
-    _custom_mappings[hevy_name] = (category, subcategory)
+    _custom_mappings[exercise_name] = (category, subcategory)
 
 
-def lookup_exercise(hevy_name: str) -> tuple[int, int, str]:
-    """Return ``(category, subcategory, display_name)`` for a Hevy exercise.
+def lookup_exercise(exercise_name: str) -> tuple[int, int, str]:
+    """Return ``(category, subcategory, display_name)`` for an exercise.
 
     Checks custom user mappings first, then the built-in 438-entry table.
     If not found anywhere, returns sentinel category ``65534``.
     """
     _ensure_custom_loaded()
-    for candidate in _lookup_candidates(hevy_name):
+    for candidate in _lookup_candidates(exercise_name):
         if candidate in _custom_mappings:
             cat, subcat = _custom_mappings[candidate]
-            return (cat, subcat, hevy_name)
-        pair = HEVY_TO_GARMIN.get(candidate)
+            return (cat, subcat, exercise_name)
+        pair = EXERCISE_TO_GARMIN.get(candidate)
         if pair is not None:
-            return (pair[0], pair[1], hevy_name)
-    return (_UNKNOWN_CATEGORY, _UNKNOWN_SUBCATEGORY, hevy_name)
+            return (pair[0], pair[1], exercise_name)
+    return (_UNKNOWN_CATEGORY, _UNKNOWN_SUBCATEGORY, exercise_name)
 
 
 def _lookup_candidates(name: str) -> list[str]:
-    """Generate alternate names for Liftosaur and Hevy exercise styles."""
+    """Generate alternate names for common exercise naming styles."""
     candidates: list[str] = []
     for candidate in (name, name.strip()):
         if candidate and candidate not in candidates:

@@ -16,7 +16,7 @@ from liftosaur2garmin.sync import sync
 
 def _require_config(args: argparse.Namespace) -> None:
     """Check config exists, error if not (unless credentials passed via flags)."""
-    source_key = getattr(args, "liftosaur_api_key", None) or getattr(args, "hevy_api_key", None)
+    source_key = getattr(args, "liftosaur_api_key", None)
     if not is_configured() and not source_key:
         print("✗ Not configured. Run: liftosaur2garmin init")
         sys.exit(1)
@@ -29,20 +29,20 @@ def cmd_init(args: argparse.Namespace) -> None:
     config = load_config()
 
     # Liftosaur API key
-    current_key = config.get("liftosaur_api_key") or config.get("hevy_api_key", "")
+    current_key = config.get("liftosaur_api_key", "")
     key_display = f" (current: {current_key[:8]}...)" if current_key else ""
     key = input(f"Liftosaur API key{key_display}: ").strip() or current_key
     if not key:
         print("✗ API key required. Create it in Liftosaur Settings > API Keys")
         sys.exit(1)
     config["liftosaur_api_key"] = key
-    config["hevy_api_key"] = key
 
     # Validate Liftosaur key
     print("  Checking Liftosaur API key...", end=" ", flush=True)
     try:
-        from liftosaur2garmin.hevy import HevyClient
-        count = HevyClient(api_key=key).get_workout_count()
+        from liftosaur2garmin.liftosaur import LiftosaurClient
+
+        count = LiftosaurClient(api_key=key).get_workout_count()
         print(f"✓ {count} workouts found")
     except Exception as e:
         print(f"✗ Failed: {e}")
@@ -116,10 +116,9 @@ def cmd_sync(args: argparse.Namespace) -> None:
     _require_config(args)
 
     overrides = {}
-    source_key = getattr(args, "liftosaur_api_key", None) or getattr(args, "hevy_api_key", None)
+    source_key = getattr(args, "liftosaur_api_key", None)
     if source_key:
         overrides["liftosaur_api_key"] = source_key
-        overrides["hevy_api_key"] = source_key
     if args.garmin_email:
         overrides["garmin_email"] = args.garmin_email
     if args.garmin_password:
@@ -161,10 +160,11 @@ def cmd_list(args: argparse.Namespace) -> None:
     """List recent Liftosaur workouts."""
     _require_config(args)
     cfg = load_config()
-    from liftosaur2garmin.hevy import HevyClient
-    source_key = getattr(args, "liftosaur_api_key", None) or getattr(args, "hevy_api_key", None)
-    hevy = HevyClient(api_key=source_key or cfg.get("liftosaur_api_key") or cfg.get("hevy_api_key"))
-    data = hevy.get_workouts(page=1, page_size=args.limit or 10)
+    from liftosaur2garmin.liftosaur import LiftosaurClient
+
+    source_key = getattr(args, "liftosaur_api_key", None)
+    client = LiftosaurClient(api_key=source_key or cfg.get("liftosaur_api_key"))
+    data = client.get_workouts(page=1, page_size=args.limit or 10)
     for w in data.get("workouts", []):
         synced = "✓" if db.is_synced(w["id"]) else " "
         exercises = len(w.get("exercises", []))
@@ -176,17 +176,17 @@ def cmd_unmapped(args: argparse.Namespace) -> None:
     """List exercises that couldn't be mapped to Garmin categories."""
     _require_config(args)
     cfg = load_config()
-    from liftosaur2garmin.hevy import HevyClient
+    from liftosaur2garmin.liftosaur import LiftosaurClient
     from liftosaur2garmin.mapper import lookup_exercise
 
-    source_key = getattr(args, "liftosaur_api_key", None) or getattr(args, "hevy_api_key", None)
-    hevy = HevyClient(api_key=source_key or cfg.get("liftosaur_api_key") or cfg.get("hevy_api_key"))
+    source_key = getattr(args, "liftosaur_api_key", None)
+    client = LiftosaurClient(api_key=source_key or cfg.get("liftosaur_api_key"))
 
     # Scan recent workouts for unmapped exercises
     unmapped: dict[str, int] = {}
     page = 1
     while page <= 10:  # check last 10 pages
-        data = hevy.get_workouts(page=page, page_size=10)
+        data = client.get_workouts(page=page, page_size=10)
         for w in data.get("workouts", []):
             for ex in w.get("exercises", []):
                 name = ex.get("title") or ex.get("name", "")
@@ -217,16 +217,16 @@ def cmd_unsync(args: argparse.Namespace) -> None:
         print(f"✓ Removed {count} sync records. All workouts will re-appear as pending.")
         return
 
-    if not args.hevy_id:
-        print("✗ Provide a Hevy workout ID, or use --all --confirm")
+    if not args.workout_id:
+        print("✗ Provide a workout ID, or use --all --confirm")
         sys.exit(1)
 
-    garmin_id = db.get_garmin_id(args.hevy_id)
-    if not db.unsync(args.hevy_id):
-        print(f"✗ No sync record found for {args.hevy_id}")
+    garmin_id = db.get_garmin_id(args.workout_id)
+    if not db.unsync(args.workout_id):
+        print(f"✗ No sync record found for {args.workout_id}")
         sys.exit(1)
 
-    print(f"✓ Removed sync record for {args.hevy_id}")
+    print(f"✓ Removed sync record for {args.workout_id}")
     if garmin_id:
         print(f"  Garmin activity: {garmin_id}")
 
@@ -254,7 +254,6 @@ def main() -> None:
         description="Sync Liftosaur workouts to Garmin Connect",
     )
     parser.add_argument("--liftosaur-api-key", help="Liftosaur API key (or LIFTOSAUR_API_KEY env var)")
-    parser.add_argument("--hevy-api-key", help=argparse.SUPPRESS)
     parser.add_argument("--garmin-email", help="Garmin email (or GARMIN_EMAIL env var)")
     parser.add_argument("--garmin-password", help="Garmin password (or GARMIN_PASSWORD env var)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
@@ -290,7 +289,7 @@ def main() -> None:
 
     # unsync
     unsync_parser = subparsers.add_parser("unsync", help="Remove sync record(s) so workouts can be re-synced")
-    unsync_parser.add_argument("hevy_id", nargs="?", help="Hevy workout ID to unsync")
+    unsync_parser.add_argument("workout_id", nargs="?", help="Workout ID to unsync")
     unsync_parser.add_argument("--all", action="store_true", help="Remove ALL sync records (requires --confirm)")
     unsync_parser.add_argument("--confirm", action="store_true", help="Required with --all")
     unsync_parser.add_argument("--delete", action="store_true", help="Also delete the Garmin activity")
