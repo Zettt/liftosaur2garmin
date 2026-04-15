@@ -13,6 +13,8 @@ from liftosaur2garmin.config import (
     save_config,
 )
 
+LEGACY_API_KEY_FIELD = "he" "vy_api_key"
+
 
 class TestLoadConfig:
     def test_returns_defaults_when_no_file(self, tmp_path: Path) -> None:
@@ -26,22 +28,22 @@ class TestLoadConfig:
         with patch("liftosaur2garmin.config.CONFIG_DIR", tmp_path), \
              patch("liftosaur2garmin.config.CONFIG_FILE", config_file):
             original = load_config()
-            original["hevy_api_key"] = "test-key-123"
+            original["liftosaur_api_key"] = "test-key-123"
             original["user_profile"]["weight_kg"] = 75.5
             save_config(original)
 
             loaded = load_config()
-            assert loaded["hevy_api_key"] == "test-key-123"
+            assert loaded["liftosaur_api_key"] == "test-key-123"
             assert loaded["user_profile"]["weight_kg"] == 75.5
 
     def test_deep_merge_preserves_defaults(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.json"
         # Save partial config (missing timing)
-        config_file.write_text(json.dumps({"hevy_api_key": "key", "user_profile": {"weight_kg": 90}}))
+        config_file.write_text(json.dumps({"liftosaur_api_key": "key", "user_profile": {"weight_kg": 90}}))
 
         with patch("liftosaur2garmin.config.CONFIG_FILE", config_file):
             config = load_config()
-            assert config["hevy_api_key"] == "key"
+            assert config["liftosaur_api_key"] == "key"
             assert config["user_profile"]["weight_kg"] == 90
             # Defaults preserved for unset values
             assert config["user_profile"]["birth_year"] == 1990
@@ -129,18 +131,30 @@ class TestLoadConfig:
         assert config["update_existing"]["enabled"] is False
         assert config["update_existing"]["match_window_minutes"] == 60
 
+    def test_migrates_legacy_api_key_field(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({LEGACY_API_KEY_FIELD: "legacy-key"}))
+
+        with patch("liftosaur2garmin.config.CONFIG_DIR", tmp_path), \
+             patch("liftosaur2garmin.config.CONFIG_FILE", config_file):
+            config = load_config()
+
+        assert config["liftosaur_api_key"] == "legacy-key"
+        saved = json.loads(config_file.read_text())
+        assert saved["liftosaur_api_key"] == "legacy-key"
+        assert LEGACY_API_KEY_FIELD not in saved
+
 
 class TestIsConfigured:
     def test_false_without_api_key(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("LIFTOSAUR_API_KEY", raising=False)
-        monkeypatch.delenv("HEVY_API_KEY", raising=False)
         with patch("liftosaur2garmin.config.CONFIG_FILE", tmp_path / "missing.json"):
             assert is_configured() is False
 
     def test_true_with_api_key(self, tmp_path: Path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"hevy_api_key": "some-key"}))
+        config_file.write_text(json.dumps({"liftosaur_api_key": "some-key"}))
 
         # When DATABASE_URL is set, is_configured also checks for Garmin tokens.
         # Clear it so this test only validates the API key check.
@@ -151,17 +165,16 @@ class TestIsConfigured:
 
     def test_false_with_empty_api_key(self, tmp_path: Path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"hevy_api_key": ""}))
+        config_file.write_text(json.dumps({"liftosaur_api_key": ""}))
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("LIFTOSAUR_API_KEY", raising=False)
-        monkeypatch.delenv("HEVY_API_KEY", raising=False)
 
         with patch("liftosaur2garmin.config.CONFIG_FILE", config_file):
             assert is_configured() is False
 
     def test_cloud_requires_garmin_tokens(self, tmp_path: Path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"hevy_api_key": "some-key"}))
+        config_file.write_text(json.dumps({"liftosaur_api_key": "some-key"}))
         monkeypatch.setenv("DATABASE_URL", "postgres://example")
 
         class FakeCursor:

@@ -19,7 +19,7 @@ def tmp_config_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def sample_workout() -> dict:
-    """A realistic Hevy workout dict."""
+    """A realistic Liftosaur workout dict."""
     return {
         "id": "test-workout-123",
         "title": "Push",
