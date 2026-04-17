@@ -85,7 +85,10 @@ def _parse_header(header: str) -> dict:
         elif key == "duration" and value.endswith("s"):
             metadata["duration_seconds"] = int(value[:-1])
         elif key in {"week", "dayInWeek", "day"}:
-            metadata[key] = int(value)
+            try:
+                metadata[key] = int(value)
+            except ValueError:
+                pass
         else:
             metadata[key] = value
     return metadata
