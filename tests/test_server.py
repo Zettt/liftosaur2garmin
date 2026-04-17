@@ -239,6 +239,62 @@ class TestSyncOneApi:
         assert update_calls == [(999, workout)]
         db_mock.mark_synced.assert_called_once()
 
+    def test_sync_one_does_not_search_beyond_bounded_recent_pages(self, monkeypatch) -> None:
+        client = TestClient(app)
+        recent_workout = {
+            "id": "recent-synced",
+            "title": "Recent Push",
+            "start_time": "2026-04-01T20:00:00+00:00",
+            "updated_at": "2026-04-01T21:00:00+00:00",
+            "exercises": [],
+        }
+        old_workout = {
+            "id": "old-w1",
+            "title": "Very Old Push",
+            "start_time": "2025-01-01T20:00:00+00:00",
+            "updated_at": "2025-01-01T21:00:00+00:00",
+            "exercises": [],
+        }
+        db_mock = MagicMock()
+        hevy_client = MagicMock()
+        total_count = 1000
+        searched_pages: list[int] = []
+
+        def fake_get_workouts(page: int, page_size: int) -> dict[str, Any]:
+            searched_pages.append(page)
+            if page == 11:
+                return {"workouts": [old_workout], "page_count": 100}
+            return {"workouts": [recent_workout], "page_count": 100}
+
+        hevy_client.get_workout_count.return_value = total_count
+        hevy_client.get_workouts.side_effect = fake_get_workouts
+
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.load_config",
+            lambda: {
+                "hevy_api_key": "hevy-key",
+                "garmin_email": "user@example.com",
+                "update_existing": {"enabled": False},
+            },
+        )
+        monkeypatch.setattr("liftosaur2garmin.server._failed_ids", set())
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_db", lambda: db_mock)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_synced_count", lambda: 0)
+        monkeypatch.setattr("liftosaur2garmin.server.db.is_synced", lambda workout_id: workout_id != "old-w1")
+        monkeypatch.setattr("liftosaur2garmin.server.db.mark_synced", db_mock.mark_synced)
+        monkeypatch.setattr("liftosaur2garmin.hevy.HevyClient", lambda api_key: hevy_client)
+        monkeypatch.setattr(
+            "liftosaur2garmin.garmin.get_client",
+            lambda email: (_ for _ in ()).throw(AssertionError("Garmin client should not be used when no workout is found")),
+        )
+
+        response = client.post("/api/sync-one")
+
+        assert response.status_code == 200
+        assert response.json() == {"synced": 0, "remaining": 0, "done": True}
+        assert searched_pages == list(range(1, 11))
+        db_mock.mark_synced.assert_not_called()
+
 
 class TestSettingsSave:
     """Tests for POST /settings endpoint."""
