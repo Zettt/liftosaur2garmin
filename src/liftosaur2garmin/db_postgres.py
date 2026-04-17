@@ -9,13 +9,13 @@ from liftosaur2garmin.db_interface import Database
 
 
 def _ts_newer(new_ts: str, old_ts: str) -> bool:
-    """Compare ISO timestamps safely (handles Z vs +00:00 differences)."""
+    """Compare ISO timestamps safely."""
     try:
         new_dt = datetime.fromisoformat(new_ts.replace("Z", "+00:00"))
         old_dt = datetime.fromisoformat(old_ts.replace("Z", "+00:00"))
         return new_dt > old_dt
     except (ValueError, TypeError):
-        return new_ts > old_ts  # fallback to string comparison
+        return new_ts > old_ts
 
 
 class PostgresDatabase(Database):
@@ -30,7 +30,6 @@ class PostgresDatabase(Database):
         import psycopg2
         from psycopg2.extras import RealDictCursor
 
-        # Reuse connection if still alive (avoids Neon cold-start per query)
         if self._conn_cache is not None:
             try:
                 self._conn_cache.cursor().execute("SELECT 1")
@@ -46,21 +45,114 @@ class PostgresDatabase(Database):
         self._conn_cache = conn
         return conn
 
+    def _column_names(self, conn, table: str) -> set[str]:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s
+                """,
+                (table,),
+            )
+            return {row["column_name"] for row in cur.fetchall()}
+
+    def _rename_column(self, conn, table: str, old_name: str, new_name: str) -> None:
+        columns = self._column_names(conn, table)
+        if old_name in columns and new_name not in columns:
+            with conn.cursor() as cur:
+                cur.execute(f"ALTER TABLE {table} RENAME COLUMN {old_name} TO {new_name}")
+
+    def _rename_app_cache_key(self, conn, old_key: str, new_key: str) -> None:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_cache WHERE key = %s", (old_key,))
+            row = cur.fetchone()
+            if row is None:
+                return
+            cur.execute("SELECT 1 FROM app_cache WHERE key = %s", (new_key,))
+            if cur.fetchone() is None:
+                cur.execute(
+                    """
+                    INSERT INTO app_cache (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                    """,
+                    (new_key, row["value"]),
+                )
+            cur.execute("DELETE FROM app_cache WHERE key = %s", (old_key,))
+
+    def _migrate_schema(self) -> None:
+        legacy_prefix = "he" "vy"
+        legacy_id_column = f"{legacy_prefix}_id"
+        legacy_updated_column = f"{legacy_prefix}_updated_at"
+        legacy_name_column = f"{legacy_prefix}_name"
+        legacy_total_key = f"{legacy_prefix}_total"
+        legacy_page_prefix = f"{legacy_prefix}_workouts_page_"
+        with self._get_conn() as conn:
+            self._rename_column(conn, "synced_workouts", legacy_id_column, "workout_id")
+            self._rename_column(conn, "synced_workouts", legacy_updated_column, "source_updated_at")
+            self._rename_column(conn, "hr_cache", legacy_id_column, "workout_id")
+            self._rename_column(conn, "custom_mappings", legacy_name_column, "exercise_name")
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT credentials FROM platform_credentials WHERE platform = %s LIMIT 1",
+                    (legacy_prefix,),
+                )
+                legacy = cur.fetchone()
+                if legacy is not None:
+                    cur.execute(
+                        "SELECT 1 FROM platform_credentials WHERE platform = 'liftosaur' LIMIT 1"
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute(
+                            """
+                            INSERT INTO platform_credentials (platform, auth_type, credentials, status)
+                            VALUES ('liftosaur', 'api_key', %s, 'active')
+                            """,
+                            (legacy["credentials"],),
+                        )
+                    cur.execute("DELETE FROM platform_credentials WHERE platform = %s", (legacy_prefix,))
+
+            self._rename_app_cache_key(conn, legacy_total_key, "workout_total")
+
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM app_cache WHERE key LIKE %s", (f"{legacy_page_prefix}%",))
+                page_rows = cur.fetchall()
+                for row in page_rows:
+                    new_key = row["key"].replace(legacy_page_prefix, "workouts_page_", 1)
+                    cur.execute("SELECT 1 FROM app_cache WHERE key = %s", (new_key,))
+                    if cur.fetchone() is None:
+                        cur.execute(
+                            """
+                            INSERT INTO app_cache (key, value)
+                            VALUES (%s, %s)
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                            """,
+                            (new_key, row["value"]),
+                        )
+                    cur.execute("DELETE FROM app_cache WHERE key = %s", (row["key"],))
+            conn.commit()
+
     def _ensure_tables(self) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS synced_workouts (
-                        hevy_id TEXT PRIMARY KEY,
+                        workout_id TEXT PRIMARY KEY,
                         garmin_activity_id TEXT,
                         title TEXT,
                         synced_at TIMESTAMPTZ DEFAULT NOW(),
                         calories INTEGER,
                         avg_hr INTEGER,
-                        status VARCHAR(20) DEFAULT 'success'
+                        status VARCHAR(20) DEFAULT 'success',
+                        source_updated_at TEXT
                     )
-                """)
-                cur.execute("""
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS sync_log (
                         id BIGSERIAL PRIMARY KEY,
                         time TIMESTAMPTZ DEFAULT NOW(),
@@ -69,15 +161,19 @@ class PostgresDatabase(Database):
                         failed INTEGER DEFAULT 0,
                         trigger VARCHAR(50) DEFAULT 'manual'
                     )
-                """)
-                cur.execute("""
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS hr_cache (
-                        hevy_id TEXT PRIMARY KEY,
+                        workout_id TEXT PRIMARY KEY,
                         data JSONB NOT NULL,
                         cached_at TIMESTAMPTZ DEFAULT NOW()
                     )
-                """)
-                cur.execute("""
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS platform_credentials (
                         platform VARCHAR(50) PRIMARY KEY,
                         auth_type VARCHAR(20) NOT NULL DEFAULT 'oauth',
@@ -86,108 +182,118 @@ class PostgresDatabase(Database):
                         expires_at TIMESTAMPTZ,
                         status VARCHAR(20) DEFAULT 'disconnected'
                     )
-                """)
-                cur.execute("""
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS custom_mappings (
-                        hevy_name TEXT PRIMARY KEY,
+                        exercise_name TEXT PRIMARY KEY,
                         category INTEGER NOT NULL,
                         subcategory INTEGER NOT NULL DEFAULT 0
                     )
-                """)
-                # Migration: add hevy_updated_at if missing
-                try:
-                    cur.execute("ALTER TABLE synced_workouts ADD COLUMN hevy_updated_at TEXT")
-                except Exception:
-                    conn.rollback()
-                cur.execute("""
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS app_cache (
                         key TEXT PRIMARY KEY,
                         value JSONB NOT NULL,
                         updated_at TIMESTAMPTZ DEFAULT NOW()
                     )
-                """)
+                    """
+                )
             conn.commit()
+        self._migrate_schema()
 
-    def is_synced(self, hevy_id: str) -> bool:
+    def is_synced(self, workout_id: str) -> bool:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM synced_workouts WHERE hevy_id = %s", (hevy_id,))
+                cur.execute("SELECT 1 FROM synced_workouts WHERE workout_id = %s", (workout_id,))
                 return cur.fetchone() is not None
 
-    def get_synced_ids(self, hevy_ids: list[str]) -> dict[str, str | None]:
-        """Batch check sync status. Returns {hevy_id: garmin_activity_id} for synced ones."""
-        if not hevy_ids:
+    def get_synced_ids(self, workout_ids: list[str]) -> dict[str, str | None]:
+        if not workout_ids:
             return {}
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT hevy_id, garmin_activity_id FROM synced_workouts WHERE hevy_id = ANY(%s)",
-                    (hevy_ids,)
+                    """
+                    SELECT workout_id, garmin_activity_id
+                    FROM synced_workouts
+                    WHERE workout_id = ANY(%s)
+                    """,
+                    (workout_ids,),
                 )
-                return {r["hevy_id"]: r["garmin_activity_id"] for r in cur.fetchall()}
+                return {row["workout_id"]: row["garmin_activity_id"] for row in cur.fetchall()}
 
-    def get_garmin_id(self, hevy_id: str) -> str | None:
+    def get_garmin_id(self, workout_id: str) -> str | None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT garmin_activity_id FROM synced_workouts WHERE hevy_id = %s",
-                    (hevy_id,),
+                    "SELECT garmin_activity_id FROM synced_workouts WHERE workout_id = %s",
+                    (workout_id,),
                 )
                 row = cur.fetchone()
                 return row["garmin_activity_id"] if row else None
 
     def mark_synced(
         self,
-        hevy_id: str,
+        workout_id: str,
         garmin_activity_id: str | None = None,
         title: str = "",
         calories: int | None = None,
         avg_hr: int | None = None,
-        hevy_updated_at: str | None = None,
+        source_updated_at: str | None = None,
     ) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO synced_workouts (hevy_id, garmin_activity_id, title, calories, avg_hr, hevy_updated_at)
+                    INSERT INTO synced_workouts (
+                        workout_id, garmin_activity_id, title, calories, avg_hr, source_updated_at
+                    )
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (hevy_id) DO UPDATE SET
+                    ON CONFLICT (workout_id) DO UPDATE SET
                         garmin_activity_id = EXCLUDED.garmin_activity_id,
                         title = EXCLUDED.title,
                         calories = EXCLUDED.calories,
                         avg_hr = EXCLUDED.avg_hr,
-                        hevy_updated_at = EXCLUDED.hevy_updated_at,
+                        source_updated_at = EXCLUDED.source_updated_at,
                         synced_at = NOW()
                     """,
-                    (hevy_id, garmin_activity_id, title, calories, avg_hr, hevy_updated_at),
+                    (workout_id, garmin_activity_id, title, calories, avg_hr, source_updated_at),
                 )
             conn.commit()
 
     def get_stale_synced(self, workouts: list[dict]) -> list[str]:
-        """Return hevy_ids of synced workouts edited on Hevy since sync."""
+        """Return synced workout IDs edited in Liftosaur since sync."""
         if not workouts:
             return []
-        hevy_ids = [w.get("id", "") for w in workouts]
+        workout_ids = [workout.get("id", "") for workout in workouts]
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT hevy_id, hevy_updated_at FROM synced_workouts WHERE hevy_id = ANY(%s) AND hevy_updated_at IS NOT NULL",
-                    (hevy_ids,)
+                    """
+                    SELECT workout_id, source_updated_at
+                    FROM synced_workouts
+                    WHERE workout_id = ANY(%s) AND source_updated_at IS NOT NULL
+                    """,
+                    (workout_ids,),
                 )
-                stored = {r["hevy_id"]: r["hevy_updated_at"] for r in cur.fetchall()}
-        stale = []
-        for w in workouts:
-            wid = w.get("id", "")
-            old_ts = stored.get(wid)
-            new_ts = w.get("updated_at") or ""
+                stored = {row["workout_id"]: row["source_updated_at"] for row in cur.fetchall()}
+        stale: list[str] = []
+        for workout in workouts:
+            workout_id = workout.get("id", "")
+            old_ts = stored.get(workout_id)
+            new_ts = workout.get("updated_at") or ""
             if old_ts and new_ts and _ts_newer(new_ts, old_ts):
-                stale.append(wid)
+                stale.append(workout_id)
         return stale
 
-    def unsync(self, hevy_id: str) -> bool:
+    def unsync(self, workout_id: str) -> bool:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM synced_workouts WHERE hevy_id = %s", (hevy_id,))
+                cur.execute("DELETE FROM synced_workouts WHERE workout_id = %s", (workout_id,))
                 deleted = cur.rowcount > 0
             conn.commit()
         return deleted
@@ -203,16 +309,17 @@ class PostgresDatabase(Database):
     def get_synced_count(self) -> int:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) AS cnt FROM synced_workouts")
-                return cur.fetchone()["cnt"]
+                cur.execute("SELECT COUNT(*) AS count FROM synced_workouts")
+                return cur.fetchone()["count"]
 
     def get_recent_synced(self, limit: int = 10) -> list[dict]:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM synced_workouts ORDER BY synced_at DESC LIMIT %s", (limit,)
+                    "SELECT * FROM synced_workouts ORDER BY synced_at DESC LIMIT %s",
+                    (limit,),
                 )
-                return [dict(r) for r in cur.fetchall()]
+                return [dict(row) for row in cur.fetchall()]
 
     def record_sync_log(
         self,
@@ -233,31 +340,29 @@ class PostgresDatabase(Database):
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM sync_log ORDER BY id DESC LIMIT %s", (limit,))
-                return [dict(r) for r in cur.fetchall()]
+                return [dict(row) for row in cur.fetchall()]
 
-    def get_cached_hr(self, hevy_id: str) -> dict | None:
+    def get_cached_hr(self, workout_id: str) -> dict | None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT data FROM hr_cache WHERE hevy_id = %s", (hevy_id,))
+                cur.execute("SELECT data FROM hr_cache WHERE workout_id = %s", (workout_id,))
                 row = cur.fetchone()
                 if row:
                     data = row["data"]
                     return json.loads(data) if isinstance(data, str) else data
                 return None
 
-    def cache_hr(self, hevy_id: str, data: dict) -> None:
+    def cache_hr(self, workout_id: str, data: dict) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO hr_cache (hevy_id, data) VALUES (%s, %s)
-                    ON CONFLICT (hevy_id) DO UPDATE SET data = EXCLUDED.data, cached_at = NOW()
+                    INSERT INTO hr_cache (workout_id, data) VALUES (%s, %s)
+                    ON CONFLICT (workout_id) DO UPDATE SET data = EXCLUDED.data, cached_at = NOW()
                     """,
-                    (hevy_id, json.dumps(data)),
+                    (workout_id, json.dumps(data)),
                 )
             conn.commit()
-
-    # ── App config (settings, mappings) ────────────────────────────────────
 
     def get_app_config(self, key: str) -> dict | None:
         with self._get_conn() as conn:
@@ -265,8 +370,8 @@ class PostgresDatabase(Database):
                 cur.execute("SELECT value FROM app_cache WHERE key = %s", (key,))
                 row = cur.fetchone()
                 if row:
-                    v = row["value"]
-                    return json.loads(v) if isinstance(v, str) else v
+                    value = row["value"]
+                    return json.loads(value) if isinstance(value, str) else value
                 return None
 
     def set_app_config(self, key: str, value: dict) -> None:
@@ -284,23 +389,29 @@ class PostgresDatabase(Database):
     def get_custom_mappings(self) -> dict[str, tuple[int, int]]:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT hevy_name, category, subcategory FROM custom_mappings")
-                return {r["hevy_name"]: (r["category"], r["subcategory"]) for r in cur.fetchall()}
+                cur.execute("SELECT exercise_name, category, subcategory FROM custom_mappings")
+                return {
+                    row["exercise_name"]: (row["category"], row["subcategory"])
+                    for row in cur.fetchall()
+                }
 
-    def save_custom_mapping(self, hevy_name: str, category: int, subcategory: int) -> None:
+    def save_custom_mapping(self, exercise_name: str, category: int, subcategory: int) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO custom_mappings (hevy_name, category, subcategory) VALUES (%s, %s, %s)
-                    ON CONFLICT (hevy_name) DO UPDATE SET category = EXCLUDED.category, subcategory = EXCLUDED.subcategory
+                    INSERT INTO custom_mappings (exercise_name, category, subcategory)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (exercise_name) DO UPDATE SET
+                        category = EXCLUDED.category,
+                        subcategory = EXCLUDED.subcategory
                     """,
-                    (hevy_name, category, subcategory),
+                    (exercise_name, category, subcategory),
                 )
             conn.commit()
 
-    def delete_custom_mapping(self, hevy_name: str) -> None:
+    def delete_custom_mapping(self, exercise_name: str) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM custom_mappings WHERE hevy_name = %s", (hevy_name,))
+                cur.execute("DELETE FROM custom_mappings WHERE exercise_name = %s", (exercise_name,))
             conn.commit()

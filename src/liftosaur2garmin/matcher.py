@@ -1,8 +1,8 @@
-"""Match Hevy workouts to existing Garmin activities by start time.
+"""Match Liftosaur workouts to existing Garmin activities by start time.
 
 Matching logic:
 1. Time match: UTC start within ±30 minutes, closest wins (greedy)
-2. Each Garmin activity matches at most ONE Hevy workout (1:1)
+2. Each Garmin activity matches at most ONE Liftosaur workout (1:1)
 3. Date fallback: same calendar day ±1 + strength type for remaining unmatched
 """
 
@@ -53,11 +53,11 @@ def fetch_garmin_activities(client, count: int = 1000) -> list[dict]:
 
 
 def count_matched_workouts(
-    hevy_total: int,
-    hevy_client,
+    workout_total: int,
+    source_client,
     garmin_activities: list[dict],
 ) -> int:
-    """Count how many Hevy workouts match a Garmin activity. Cached 10min."""
+    """Count how many Liftosaur workouts match a Garmin activity. Cached 10min."""
     global _matched_count_cache, _matched_count_timestamp
 
     if _matched_count_cache is not None and (_time.time() - _matched_count_timestamp) < MATCHED_COUNT_TTL:
@@ -66,7 +66,7 @@ def count_matched_workouts(
     all_workouts: list[dict] = []
     page = 1
     while True:
-        data = hevy_client.get_workouts(page=page, page_size=10)
+        data = source_client.get_workouts(page=page, page_size=10)
         workouts = data.get("workouts", [])
         if not workouts:
             break
@@ -100,22 +100,22 @@ def match_workouts_to_garmin(
     garmin_activities: list[dict],
     window_minutes: int = 30,
 ) -> dict[str, dict]:
-    """Match Hevy workouts to Garmin activities.
+    """Match Liftosaur workouts to Garmin activities.
 
-    Strict 1:1: each Garmin activity matches at most one Hevy workout.
+    Strict 1:1: each Garmin activity matches at most one Liftosaur workout.
     Greedy best-match by time difference.
     Fallback: same calendar day ±1 with strength activity type.
     """
     # Pass 1: collect all time-based candidates
-    candidates: list[tuple[str, int, float, dict]] = []  # (hevy_id, garmin_id, diff_s, act)
+    candidates: list[tuple[str, int, float, dict]] = []  # (workout_id, garmin_id, diff_s, act)
 
     for workout in workouts:
-        hevy_id = workout.get("id", "")
-        hevy_start_str = workout.get("start_time") or workout.get("startTime", "")
-        hevy_start = _parse_time(hevy_start_str)
-        if not hevy_start:
+        workout_id = workout.get("id", "")
+        workout_start_str = workout.get("start_time") or workout.get("startTime", "")
+        workout_start = _parse_time(workout_start_str)
+        if not workout_start:
             continue
-        hevy_naive = hevy_start.replace(tzinfo=None) if hevy_start.tzinfo else hevy_start
+        workout_start_naive = workout_start.replace(tzinfo=None) if workout_start.tzinfo else workout_start
 
         for act in garmin_activities:
             act_start_str = act.get("startTimeGMT") or act.get("startTimeLocal", "")
@@ -123,27 +123,27 @@ def match_workouts_to_garmin(
             if not act_start:
                 continue
             act_naive = act_start.replace(tzinfo=None) if act_start.tzinfo else act_start
-            diff_seconds = abs((hevy_naive - act_naive).total_seconds())
+            diff_seconds = abs((workout_start_naive - act_naive).total_seconds())
 
             if diff_seconds < window_minutes * 60:
-                candidates.append((hevy_id, act.get("activityId"), diff_seconds, act))
+                candidates.append((workout_id, act.get("activityId"), diff_seconds, act))
 
     # Greedy assignment: closest matches first, strict 1:1
     candidates.sort(key=lambda x: x[2])
     matches: dict[str, dict] = {}
     claimed_garmin: set[int] = set()
-    claimed_hevy: set[str] = set()
+    claimed_workouts: set[str] = set()
 
-    for hevy_id, garmin_id, diff_s, act in candidates:
-        if hevy_id in claimed_hevy or garmin_id in claimed_garmin:
+    for workout_id, garmin_id, diff_s, act in candidates:
+        if workout_id in claimed_workouts or garmin_id in claimed_garmin:
             continue
-        matches[hevy_id] = {
+        matches[workout_id] = {
             "garmin_id": garmin_id,
             "garmin_name": act.get("activityName", ""),
             "garmin_type": act.get("activityType", {}).get("typeKey", ""),
             "match_type": "time_match",
         }
-        claimed_hevy.add(hevy_id)
+        claimed_workouts.add(workout_id)
         claimed_garmin.add(garmin_id)
 
     # Pass 2: date fallback for still-unmatched workouts
@@ -160,18 +160,18 @@ def match_workouts_to_garmin(
             garmin_by_date.setdefault(gmt[:10], []).append(act)
 
     for workout in workouts:
-        hevy_id = workout.get("id", "")
-        if hevy_id in claimed_hevy:
+        workout_id = workout.get("id", "")
+        if workout_id in claimed_workouts:
             continue
-        hevy_start_str = workout.get("start_time") or workout.get("startTime", "")
-        if not hevy_start_str:
+        workout_start_str = workout.get("start_time") or workout.get("startTime", "")
+        if not workout_start_str:
             continue
-        hevy_date = hevy_start_str[:10]
-        hevy_dt = _parse_time(hevy_start_str)
-        check_dates = {hevy_date}
-        if hevy_dt:
-            check_dates.add((hevy_dt - timedelta(days=1)).strftime("%Y-%m-%d"))
-            check_dates.add((hevy_dt + timedelta(days=1)).strftime("%Y-%m-%d"))
+        workout_date = workout_start_str[:10]
+        workout_dt = _parse_time(workout_start_str)
+        check_dates = {workout_date}
+        if workout_dt:
+            check_dates.add((workout_dt - timedelta(days=1)).strftime("%Y-%m-%d"))
+            check_dates.add((workout_dt + timedelta(days=1)).strftime("%Y-%m-%d"))
 
         for d in check_dates:
             candidates_date = garmin_by_date.get(d, [])
@@ -179,16 +179,16 @@ def match_workouts_to_garmin(
                 gid = act.get("activityId")
                 if gid in claimed_garmin:
                     continue
-                matches[hevy_id] = {
+                matches[workout_id] = {
                     "garmin_id": gid,
                     "garmin_name": act.get("activityName", ""),
                     "garmin_type": act.get("activityType", {}).get("typeKey", ""),
                     "match_type": "date_match",
                 }
-                claimed_hevy.add(hevy_id)
+                claimed_workouts.add(workout_id)
                 claimed_garmin.add(gid)
                 break
-            if hevy_id in claimed_hevy:
+            if workout_id in claimed_workouts:
                 break
 
     return matches

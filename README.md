@@ -2,13 +2,11 @@
 
 Sync Liftosaur workouts to Garmin Connect by converting Liftosaur history records into strength-training FIT files and uploading them to Garmin.
 
-This project is based on [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin). It adapts the Garmin Connect and FIT-generation pipeline from that codebase, while replacing the source integration with the Liftosaur REST API documented at [liftosaur.com/doc/api](https://www.liftosaur.com/doc/api). Thanks to Konstantinos Georgiou for publishing the original project this work builds on.
-
 ## What It Does
 
 - Fetches workout history from Liftosaur with a personal API key
 - Parses Liftosaur workout text into exercises, sets, reps, weights, and warmups
-- Uses a Garmin FIT mapping and upload pipeline adapted from `hevy2garmin`
+- Uses a Garmin FIT mapping and upload pipeline for Garmin Connect
 - Supports CLI sync and the FastAPI dashboard flow
 
 ## Requirements
@@ -172,7 +170,7 @@ liftosaur2garmin sync --dry-run
 ## Tests
 
 ```bash
-pytest
+UV_CACHE_DIR=.uv-cache uv run pytest -q
 ```
 
 Worker tests:
@@ -183,10 +181,10 @@ node --test worker-di/index.test.js
 
 ## Acknowledgements
 
-This project builds on the open-source work in [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin) by Konstantinos Georgiou. The Garmin sync, FIT generation, and exercise-mapping approach here started from that codebase and was then adapted for Liftosaur.
+This project builds on the open-source work in [`drkostas/hevy2garmin`](https://github.com/drkostas/hevy2garmin) by Konstantinos Georgiou. Liftosaur integration targets the REST API documented at [liftosaur.com/doc/api](https://www.liftosaur.com/doc/api).
 
 ## Notes
 
 - The Liftosaur client normalizes history records into the workout structure expected by the existing Garmin sync pipeline.
-- Exercise mapping still uses the large Hevy-derived Garmin mapping table, with compatibility logic for Liftosaur-style names such as `Bench Press, Barbell`.
+- Exercise mapping includes compatibility logic for Liftosaur-style names such as `Bench Press, Barbell`.
 - Hosted Garmin login can run through the repo-owned Cloudflare Worker in [worker-di](./worker-di). Without `GARMIN_AUTH_WORKER_BASE_URL`, hosted setup falls back to token-file import from a local `init` or `serve` flow.

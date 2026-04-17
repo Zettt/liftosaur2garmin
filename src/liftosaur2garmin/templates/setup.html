@@ -23,12 +23,12 @@
         <div class="card section">
             <div class="card-title" style="margin-bottom: 16px;">1. Liftosaur API Key</div>
             <div class="form-group">
-                <label class="form-label" for="hevy_api_key">API Key</label>
+                <label class="form-label" for="liftosaur_api_key">API Key</label>
                 <div style="display: flex; gap: 8px;">
-                    <input class="form-input" type="text" id="hevy_api_key" name="hevy_api_key" placeholder="Paste your Liftosaur API key" value="{{ config.get('liftosaur_api_key') or config.get('hevy_api_key', '') }}" required autocomplete="off" style="flex: 1;">
+                    <input class="form-input" type="text" id="liftosaur_api_key" name="liftosaur_api_key" placeholder="Paste your Liftosaur API key" value="{{ config.get('liftosaur_api_key', '') }}" required autocomplete="off" style="flex: 1;">
                     <button type="button" class="btn btn-secondary btn-sm" onclick="validateLiftosaurKey()" style="white-space: nowrap;">Test Key</button>
                 </div>
-                <div id="hevy-validate-result" style="margin-top: 4px;"></div>
+                <div id="liftosaur-validate-result" style="margin-top: 4px;"></div>
                 <div class="form-hint" style="line-height: 1.8;">
                     1. Open Liftosaur and go to <strong>Settings</strong><br>
                     2. Open <strong>API Keys</strong><br>
@@ -438,15 +438,15 @@ async function finishGarminLogin() {
 {% endif %}
 
 async function validateLiftosaurKey() {
-    const key = document.getElementById('hevy_api_key').value.trim();
-    const result = document.getElementById('hevy-validate-result');
+    const key = document.getElementById('liftosaur_api_key').value.trim();
+    const result = document.getElementById('liftosaur-validate-result');
     if (!key) {
         result.innerHTML = '<span style="font-size: 12px; color: var(--red);">Enter a key first.</span>';
         return;
     }
     result.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Testing...</span>';
     try {
-        const resp = await fetch('/api/validate-hevy?key=' + encodeURIComponent(key));
+        const resp = await fetch('/api/validate-liftosaur?key=' + encodeURIComponent(key));
         if (resp.ok) {
             const data = await resp.json();
             result.innerHTML = '<span style="font-size: 12px; color: var(--accent);">&#10003; Valid - ' + data.workout_count + ' workouts found</span>';

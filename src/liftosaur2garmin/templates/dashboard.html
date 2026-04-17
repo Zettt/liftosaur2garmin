@@ -65,9 +65,9 @@
 </div>
 {% endif %}
 
-{% if synced_count == 0 and hevy_total > 0 %}
+{% if synced_count == 0 and workout_total > 0 %}
 <div class="card" style="margin-bottom: 20px; text-align: center; padding: 32px 20px; border-color: rgba(16, 185, 129, 0.3);">
-    <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">{{ hevy_total }} workouts ready to sync</div>
+    <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">{{ workout_total }} workouts ready to sync</div>
     <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 16px;">Your Liftosaur workouts are not on Garmin yet. Click Sync Now below to start.</p>
 </div>
 {% endif %}
@@ -80,11 +80,11 @@
         <div class="stat-label">On Garmin</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value blue">{{ hevy_total }}</div>
+        <div class="stat-value blue">{{ workout_total }}</div>
         <div class="stat-label">In Liftosaur</div>
     </div>
     <div class="stat-card">
-        {% set pending = hevy_total - on_garmin %}
+        {% set pending = workout_total - on_garmin %}
         <div class="stat-value {% if pending > 0 %}amber{% endif %}" id="stat-pending">{{ pending }}</div>
         <div class="stat-label">Pending</div>
     </div>
@@ -101,7 +101,7 @@
     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
         <button id="sync-now-btn" class="btn btn-primary btn-sm" onclick="syncNow()" style="flex-shrink: 0;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-            {% set pending = hevy_total - [synced_count, matched_count]|max %}{% if pending > 1 %}Sync {{ pending }} Workouts{% elif pending == 1 %}Sync 1 Workout{% else %}Sync Now{% endif %}
+            {% set pending = workout_total - [synced_count, matched_count]|max %}{% if pending > 1 %}Sync {{ pending }} Workouts{% elif pending == 1 %}Sync 1 Workout{% else %}Sync Now{% endif %}
         </button>
         <button id="sync-stop-btn" class="btn btn-secondary btn-sm" onclick="stopSync()" style="display: none; flex-shrink: 0;">Stop</button>
         <div id="sync-progress" style="flex: 1; display: none;">
@@ -114,7 +114,7 @@
             </div>
         </div>
     </div>
-    {% set pending = hevy_total - [synced_count, matched_count]|max %}
+    {% set pending = workout_total - [synced_count, matched_count]|max %}
     {% if pending > 1 %}
     <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.6;">
         Uploads one workout at a time (~{{ ((pending * 8) / 60) | round(0) | int }} min for {{ pending }}).

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from liftosaur2garmin.mapper import (
-    HEVY_TO_GARMIN,
+    EXERCISE_TO_GARMIN,
     _UNKNOWN_CATEGORY,
     lookup_exercise,
     save_custom_mapping,
@@ -40,7 +40,7 @@ class TestLookupBuiltIn:
         assert name == ""
 
     def test_mapping_count_minimum(self) -> None:
-        assert len(HEVY_TO_GARMIN) >= 400
+        assert len(EXERCISE_TO_GARMIN) >= 400
 
     def test_preserves_original_name(self) -> None:
         _, _, name = lookup_exercise("Deadlift (Barbell)")

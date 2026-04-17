@@ -71,7 +71,7 @@ def _has_garmin_tokens(config: dict[str, Any] | None = None) -> bool:
         return False
 
 
-def _persist_cloud_credentials(hevy_api_key: str = "", garmin_email: str = "") -> None:
+def _persist_cloud_credentials(liftosaur_api_key: str = "", garmin_email: str = "") -> None:
     if not db.get_database_url():
         return
     try:
@@ -81,16 +81,16 @@ def _persist_cloud_credentials(hevy_api_key: str = "", garmin_email: str = "") -
 
             with _db._get_conn() as conn:
                 with conn.cursor() as cur:
-                    hevy_key = hevy_api_key or os.environ.get("HEVY_API_KEY", "")
-                    if hevy_key:
+                    api_key = liftosaur_api_key
+                    if api_key:
                         cur.execute(
                             """
                             INSERT INTO platform_credentials (platform, auth_type, credentials, status)
-                            VALUES ('hevy', 'api_key', %s, 'active')
+                            VALUES ('liftosaur', 'api_key', %s, 'active')
                             ON CONFLICT (platform) DO UPDATE
                             SET credentials = EXCLUDED.credentials, status = 'active'
                             """,
-                            (_json.dumps({"api_key": hevy_key}),),
+                            (_json.dumps({"api_key": api_key}),),
                         )
                     if garmin_email:
                         cur.execute(
@@ -189,11 +189,11 @@ def _get_unmapped_exercises() -> list[tuple[str, int]]:
     config = load_config()
     unmapped: dict[str, int] = {}
     try:
-        from liftosaur2garmin.hevy import HevyClient
+        from liftosaur2garmin.liftosaur import LiftosaurClient
         from liftosaur2garmin.mapper import lookup_exercise
-        hevy = HevyClient(api_key=config.get("hevy_api_key"))
+        client = LiftosaurClient(api_key=config.get("liftosaur_api_key"))
         for pg in range(1, 6):
-            data = hevy.get_workouts(page=pg, page_size=10)
+            data = client.get_workouts(page=pg, page_size=10)
             for w in data.get("workouts", []):
                 for ex in w.get("exercises", []):
                     name = ex.get("title") or ex.get("name", "")
@@ -223,13 +223,14 @@ def _run_autosync() -> None:
         return
 
     logger.info("Auto-sync: running scheduled sync")
-    hevy_auth_failed = False
+    liftosaur_auth_failed = False
     try:
         result = sync(limit=10, dry_run=False)
     except Exception as e:
-        from liftosaur2garmin.hevy import HevyAuthError
-        if isinstance(e, HevyAuthError):
-            logger.error("Auto-sync: Hevy API key invalid — disabling auto-sync. %s", e)
+        from liftosaur2garmin.liftosaur import LiftosaurAuthError
+
+        if isinstance(e, LiftosaurAuthError):
+            logger.error("Auto-sync: Liftosaur API key invalid — disabling auto-sync. %s", e)
             config["auto_sync"]["enabled"] = False
             save_config(config)
             # Also persist to DB (Vercel filesystem is read-only)
@@ -248,12 +249,12 @@ def _run_autosync() -> None:
                             conn.commit()
                 except Exception:
                     pass
-            hevy_auth_failed = True
+            liftosaur_auth_failed = True
         result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(e)}
     finally:
         _sync_executing.release()
 
-    if hevy_auth_failed:
+    if liftosaur_auth_failed:
         return  # Don't reschedule
 
     _last_sync_time = datetime.now(timezone.utc)
@@ -381,7 +382,7 @@ async def check_setup(request: Request, call_next):
         "/api/sync-one",
         "/api/cron/sync",
         "/api/setup-actions",
-        "/api/validate-hevy",
+        "/api/validate-liftosaur",
         "/api/garmin-ticket",
         "/api/garmin/login/start",
         "/api/garmin/login/finish",
@@ -410,33 +411,34 @@ async def dashboard(request: Request):
 
     garmin_connected = _has_garmin_tokens(config)
 
-    hevy_total = 0
+    workout_total = 0
     matched_count = synced_count  # Use DB count (fast) instead of Garmin API (slow)
     try:
-        # Try cached count from DB first (instant), fall back to Hevy API
+        # Try cached count from DB first (instant), fall back to Liftosaur API
         _db = db.get_db()
-        cached = _db.get_app_config("hevy_total")
+        cached = _db.get_app_config("workout_total")
         if cached and isinstance(cached, dict):
-            hevy_total = cached.get("count", 0)
+            workout_total = cached.get("count", 0)
         else:
-            from liftosaur2garmin.hevy import HevyClient
-            hevy = HevyClient(api_key=config.get("hevy_api_key"))
-            hevy_total = hevy.get_workout_count()
-            _db.set_app_config("hevy_total", {"count": hevy_total})
+            from liftosaur2garmin.liftosaur import LiftosaurClient
+
+            client = LiftosaurClient(api_key=config.get("liftosaur_api_key"))
+            workout_total = client.get_workout_count()
+            _db.set_app_config("workout_total", {"count": workout_total})
     except Exception:
         pass
     mapping_count = 0
     try:
-        from liftosaur2garmin.mapper import HEVY_TO_GARMIN, _custom_mappings, _ensure_custom_loaded
+        from liftosaur2garmin.mapper import EXERCISE_TO_GARMIN, _custom_mappings, _ensure_custom_loaded
         _ensure_custom_loaded()
-        mapping_count = len(HEVY_TO_GARMIN) + len(_custom_mappings)
+        mapping_count = len(EXERCISE_TO_GARMIN) + len(_custom_mappings)
     except Exception:
         pass
     return _render(
         "dashboard.html",
         synced_count=synced_count,
         matched_count=matched_count,
-        hevy_total=hevy_total,
+        workout_total=workout_total,
         recent=recent,
         auto_sync=_get_autosync_status(),
         sync_log=db.get_sync_log(10),
@@ -465,22 +467,22 @@ async def setup_page(request: Request):
 
 @app.post("/setup")
 async def setup_save(
-    hevy_api_key: str = Form(""),
+    liftosaur_api_key: str = Form(""),
     garmin_email: str = Form(""),
     weight_kg: float = Form(80.0),
     birth_year: int = Form(1990),
     sex: str = Form("male"),
 ):
     config = load_config()
-    if hevy_api_key:
-        config["hevy_api_key"] = hevy_api_key
+    if liftosaur_api_key:
+        config["liftosaur_api_key"] = liftosaur_api_key
     if garmin_email:
         config["garmin_email"] = garmin_email
     config["user_profile"]["weight_kg"] = weight_kg
     config["user_profile"]["birth_year"] = birth_year
     config["user_profile"]["sex"] = sex
     save_config(config)
-    _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
+    _persist_cloud_credentials(liftosaur_api_key=liftosaur_api_key, garmin_email=garmin_email)
     if db.get_database_url() and not _has_garmin_tokens(config):
         return RedirectResponse("/setup?saved=1", status_code=303)
     return RedirectResponse("/", status_code=303)
@@ -635,28 +637,28 @@ async def workouts_page(request: Request):
     page_count = 1
     fetch_error = None
     try:
-        from liftosaur2garmin.hevy import HevyClient
+        from liftosaur2garmin.liftosaur import LiftosaurClient
 
         _db = db.get_db()
-        cache_key = f"hevy_workouts_page_{page}"
+        cache_key = f"workouts_page_{page}"
 
-        # Try DB cache first (populated during sync). Fall back to Hevy API on miss.
+        # Try DB cache first (populated during sync). Fall back to Liftosaur API on miss.
         cached = _db.get_app_config(cache_key)
         if cached:
             workouts_raw = cached.get("workouts", [])
             page_count = cached.get("page_count", 1)
         else:
-            data = HevyClient(api_key=config.get("hevy_api_key")).get_workouts(page=page, page_size=10)
+            data = LiftosaurClient(api_key=config.get("liftosaur_api_key")).get_workouts(page=page, page_size=10)
             workouts_raw = data.get("workouts", [])
             page_count = data.get("page_count", 1)
             _db.set_app_config(cache_key, {"workouts": workouts_raw, "page_count": page_count})
 
         # Batch check sync status (1 query instead of N)
-        hevy_ids = [w.get("id", "") for w in workouts_raw]
-        synced_map = _db.get_synced_ids(hevy_ids) if hasattr(_db, 'get_synced_ids') else {
-            wid: db.get_garmin_id(wid) for wid in hevy_ids if db.is_synced(wid)
+        workout_ids = [w.get("id", "") for w in workouts_raw]
+        synced_map = _db.get_synced_ids(workout_ids) if hasattr(_db, "get_synced_ids") else {
+            wid: db.get_garmin_id(wid) for wid in workout_ids if db.is_synced(wid)
         }
-        # Check for workouts edited on Hevy since last sync
+        # Check for workouts edited in Liftosaur since last sync
         stale_ids = set(_db.get_stale_synced(workouts_raw))
 
         # Get profile for calorie calculation
@@ -718,8 +720,8 @@ async def workouts_page(request: Request):
     return _render("workouts.html", workouts=workouts, hr_fusion_enabled=hr_fusion, page=page, page_count=page_count, fetch_error=fetch_error)
 
 
-@app.get("/api/workout/{hevy_id}/hr", response_class=HTMLResponse)
-async def api_workout_hr(request: Request, hevy_id: str):
+@app.get("/api/workout/{workout_id}/hr", response_class=HTMLResponse)
+async def api_workout_hr(request: Request, workout_id: str):
     """Fetch HR data for a workout's matched Garmin activity. Returns JSON for Chart.js.
 
     Results are cached in SQLite — first load hits Garmin API, subsequent loads are instant.
@@ -733,19 +735,19 @@ async def api_workout_hr(request: Request, hevy_id: str):
         return JSONResponse({"error": "HR fusion disabled in settings"}, status_code=404)
 
     # Check cache first
-    cached = db.get_cached_hr(hevy_id)
+    cached = db.get_cached_hr(workout_id)
     if cached:
         return JSONResponse(cached)
 
     try:
-        from liftosaur2garmin.hevy import HevyClient
+        from liftosaur2garmin.liftosaur import LiftosaurClient
         from liftosaur2garmin.garmin import RateLimiter, get_client
         from liftosaur2garmin.matcher import fetch_garmin_activities, match_workouts_to_garmin
 
-        hevy = HevyClient(api_key=config.get("hevy_api_key"))
-        data = hevy.get_workouts(page=1, page_size=10)
+        client = LiftosaurClient(api_key=config.get("liftosaur_api_key"))
+        data = client.get_workouts(page=1, page_size=10)
         workouts = data.get("workouts", [])
-        workout = next((w for w in workouts if w["id"] == hevy_id), None)
+        workout = next((w for w in workouts if w["id"] == workout_id), None)
         if not workout:
             return JSONResponse({"error": "Workout not found"}, status_code=404)
 
@@ -753,10 +755,10 @@ async def api_workout_hr(request: Request, hevy_id: str):
         garmin_acts = fetch_garmin_activities(garmin_client, count=1000)
         matches = match_workouts_to_garmin([workout], garmin_acts)
 
-        if hevy_id not in matches:
+        if workout_id not in matches:
             return JSONResponse({"error": "No matching Garmin activity"}, status_code=404)
 
-        garmin_id = matches[hevy_id]["garmin_id"]
+        garmin_id = matches[workout_id]["garmin_id"]
         limiter = RateLimiter(delay=1.0)
 
         # Fetch activity summary for avg/max HR
@@ -811,14 +813,14 @@ async def api_workout_hr(request: Request, hevy_id: str):
             "hr_samples": hr_samples,
             "segments": segments,
             "garmin_id": garmin_id,
-            "garmin_name": matches[hevy_id].get("garmin_name", ""),
+            "garmin_name": matches[workout_id].get("garmin_name", ""),
             "avg_hr": details.get("averageHR") or details.get("summaryDTO", {}).get("averageHR"),
             "max_hr": details.get("maxHR") or details.get("summaryDTO", {}).get("maxHR"),
             "calories": details.get("calories") or details.get("summaryDTO", {}).get("calories"),
         }
 
         # Cache for instant subsequent loads
-        db.cache_hr(hevy_id, result)
+        db.cache_hr(workout_id, result)
 
         return JSONResponse(result)
 
@@ -834,14 +836,14 @@ async def sync_page(request: Request):
 
 @app.get("/mappings", response_class=HTMLResponse)
 async def mappings_page(request: Request):
-    from liftosaur2garmin.mapper import HEVY_TO_GARMIN, _custom_mappings, _ensure_custom_loaded
+    from liftosaur2garmin.mapper import EXERCISE_TO_GARMIN, _custom_mappings, _ensure_custom_loaded
 
     _ensure_custom_loaded()
 
     CAT_NAMES = _get_cat_names()
 
     mappings = []
-    for name, (cat, subcat) in sorted(HEVY_TO_GARMIN.items()):
+    for name, (cat, subcat) in sorted(EXERCISE_TO_GARMIN.items()):
         cat_name = CAT_NAMES.get(cat, f"Category {cat}")
         mappings.append((name, cat, subcat, cat_name))
     for name, (cat, subcat) in sorted(_custom_mappings.items()):
@@ -876,7 +878,7 @@ async def settings_page(request: Request):
     garmin_auth_worker_base_url = _get_garmin_auth_worker_base_url()
     unmapped: dict[str, int] = {}
     try:
-        # Use cached unmapped from DB (no Hevy API call)
+        # Use cached unmapped from DB (no Liftosaur API call)
         for name, count in _get_unmapped_exercises():
             unmapped[name] = count
     except Exception:
@@ -894,7 +896,7 @@ async def settings_page(request: Request):
 
 @app.post("/settings")
 async def settings_save(
-    hevy_api_key: str = Form(""), garmin_email: str = Form(""),
+    liftosaur_api_key: str = Form(""), garmin_email: str = Form(""),
     weight_kg: float = Form(80.0), birth_year: int = Form(1990), sex: str = Form("male"), vo2max: float = Form(45.0),
     working_set_seconds: int = Form(40), warmup_set_seconds: int = Form(25),
     rest_between_sets_seconds: int = Form(75), rest_between_exercises_seconds: int = Form(120),
@@ -903,8 +905,8 @@ async def settings_save(
     match_window_minutes: int = Form(30),
 ):
     config = load_config()
-    if hevy_api_key:
-        config["hevy_api_key"] = hevy_api_key
+    if liftosaur_api_key:
+        config["liftosaur_api_key"] = liftosaur_api_key
     if garmin_email:
         config["garmin_email"] = garmin_email
     config["user_profile"].update(weight_kg=weight_kg, birth_year=birth_year, sex=sex, vo2max=vo2max)
@@ -918,7 +920,7 @@ async def settings_save(
     ue["enabled"] = update_existing_enabled == "on"
     ue["match_window_minutes"] = max(1, min(1440, match_window_minutes))
     save_config(config)
-    _persist_cloud_credentials(hevy_api_key=hevy_api_key, garmin_email=garmin_email)
+    _persist_cloud_credentials(liftosaur_api_key=liftosaur_api_key, garmin_email=garmin_email)
 
     # Persist settings to DB on cloud (filesystem is read-only on Vercel)
     if db.get_database_url():
@@ -941,11 +943,11 @@ async def settings_save(
 async def api_save_mapping(request: Request):
     """Save a custom exercise mapping."""
     form = await request.form()
-    hevy_name = form.get("hevy_name", "").strip()
+    exercise_name = form.get("exercise_name", "").strip()
     category = int(form.get("category", 65534))
     subcategory = int(form.get("subcategory", 0))
 
-    if not hevy_name:
+    if not exercise_name:
         return HTMLResponse('<div class="toast toast-error">Exercise name required</div>')
 
     # Validate category ID exists
@@ -956,32 +958,32 @@ async def api_save_mapping(request: Request):
     # Save to DB on cloud, filesystem locally
     if db.get_database_url():
         _db = db.get_db()
-        if hasattr(_db, 'save_custom_mapping'):
-            _db.save_custom_mapping(hevy_name, category, subcategory)
+        if hasattr(_db, "save_custom_mapping"):
+            _db.save_custom_mapping(exercise_name, category, subcategory)
     else:
         from liftosaur2garmin.mapper import save_custom_mapping
-        save_custom_mapping(hevy_name, category, subcategory)
+        save_custom_mapping(exercise_name, category, subcategory)
 
     global _unmapped_cache
     _unmapped_cache = None
 
     cat_label = _get_cat_names().get(category, f"Category {category}")
-    return HTMLResponse(f'<div class="toast toast-success">Mapped "{hevy_name}" → {cat_label} ({category}:{subcategory}). <a href="/mappings">Reload</a></div>')
+    return HTMLResponse(f'<div class="toast toast-success">Mapped "{exercise_name}" → {cat_label} ({category}:{subcategory}). <a href="/mappings">Reload</a></div>')
 
 
 @app.post("/api/mapping/delete", response_class=HTMLResponse)
 async def api_delete_mapping(request: Request):
     """Delete a custom exercise mapping."""
     form = await request.form()
-    hevy_name = form.get("hevy_name", "").strip()
-    if not hevy_name:
+    exercise_name = form.get("exercise_name", "").strip()
+    if not exercise_name:
         return HTMLResponse('<div class="toast toast-error">Exercise name required</div>')
 
     from liftosaur2garmin.mapper import _custom_mappings
     if db.get_database_url():
         _db = db.get_db()
-        if hasattr(_db, 'delete_custom_mapping'):
-            _db.delete_custom_mapping(hevy_name)
+        if hasattr(_db, "delete_custom_mapping"):
+            _db.delete_custom_mapping(exercise_name)
     else:
         import json
         from pathlib import Path
@@ -989,28 +991,29 @@ async def api_delete_mapping(request: Request):
         if path.exists():
             try:
                 data = json.loads(path.read_text())
-                data.pop(hevy_name, None)
+                data.pop(exercise_name, None)
                 path.write_text(json.dumps(data, indent=2))
             except Exception:
                 pass
-    _custom_mappings.pop(hevy_name, None)
+    _custom_mappings.pop(exercise_name, None)
 
     global _unmapped_cache
     _unmapped_cache = None
 
-    return HTMLResponse(f'<div class="toast toast-success">Deleted mapping for "{hevy_name}". <a href="/mappings">Reload</a></div>')
+    return HTMLResponse(f'<div class="toast toast-success">Deleted mapping for "{exercise_name}". <a href="/mappings">Reload</a></div>')
 
 
-@app.get("/api/validate-hevy")
-async def api_validate_hevy(request: Request):
-    """Test a Hevy API key. Used by setup page."""
+@app.get("/api/validate-liftosaur")
+async def api_validate_liftosaur(request: Request):
+    """Test a Liftosaur API key. Used by setup page."""
     from fastapi.responses import JSONResponse
     key = request.query_params.get("key", "")
     if not key:
         return JSONResponse({"error": "No key provided"}, status_code=400)
     try:
-        from liftosaur2garmin.hevy import HevyClient
-        count = HevyClient(api_key=key).get_workout_count()
+        from liftosaur2garmin.liftosaur import LiftosaurClient
+
+        count = LiftosaurClient(api_key=key).get_workout_count()
         return JSONResponse({"valid": True, "workout_count": count})
     except Exception as e:
         return JSONResponse({"valid": False, "error": str(e)}, status_code=400)
@@ -1136,7 +1139,7 @@ async def api_sync(request: Request):
 @app.post("/api/sync/{workout_id}", response_class=HTMLResponse)
 async def api_sync_single(request: Request, workout_id: str):
     try:
-        from liftosaur2garmin.hevy import HevyClient
+        from liftosaur2garmin.liftosaur import LiftosaurClient
         from liftosaur2garmin.fit import generate_fit
         from liftosaur2garmin.garmin import get_client, rename_activity, set_description, upload_fit, generate_description, find_activity_by_start_time
         from liftosaur2garmin.sync import update_existing_activity_sets
@@ -1146,7 +1149,7 @@ async def api_sync_single(request: Request, workout_id: str):
         force_upload = request.query_params.get("force") == "1"
 
         config = load_config()
-        client = HevyClient(api_key=config.get("hevy_api_key"))
+        client = LiftosaurClient(api_key=config.get("liftosaur_api_key"))
         workout = None
         page = 1
         while True:
@@ -1180,7 +1183,7 @@ async def api_sync_single(request: Request, workout_id: str):
             if aid:
                 rename_activity(garmin_client, aid, workout["title"])
                 set_description(garmin_client, aid, generate_description(workout, calories=result.get("calories"), avg_hr=result.get("avg_hr")))
-            db.mark_synced(hevy_id=workout_id, garmin_activity_id=str(aid) if aid else None, title=workout["title"], calories=result.get("calories"), avg_hr=result.get("avg_hr"), hevy_updated_at=workout.get("updated_at"))
+            db.mark_synced(workout_id=workout_id, garmin_activity_id=str(aid) if aid else None, title=workout["title"], calories=result.get("calories"), avg_hr=result.get("avg_hr"), source_updated_at=workout.get("updated_at"))
 
         start = (workout.get("start_time") or "")[:16]
         return HTMLResponse(f'<tr><td><span class="badge badge-success">✓ Synced</span></td><td>{start}</td><td><strong>{workout["title"]}</strong></td><td>{len(workout.get("exercises", []))}</td><td></td></tr>')
@@ -1188,13 +1191,13 @@ async def api_sync_single(request: Request, workout_id: str):
         return HTMLResponse(f'<td colspan="5" style="color: var(--pico-del-color);">Failed: {e}</td>')
 
 
-@app.post("/api/unsync/{hevy_id}")
-async def api_unsync(request: Request, hevy_id: str):
+@app.post("/api/unsync/{workout_id}")
+async def api_unsync(request: Request, workout_id: str):
     """Remove a workout's sync record so it can be re-synced."""
     from fastapi.responses import JSONResponse
 
-    garmin_id = db.get_garmin_id(hevy_id)
-    deleted = db.unsync(hevy_id)
+    garmin_id = db.get_garmin_id(workout_id)
+    deleted = db.unsync(workout_id)
     if not deleted:
         return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
 
@@ -1209,16 +1212,16 @@ async def api_unsync(request: Request, hevy_id: str):
             client = get_client(config.get("garmin_email"))
             client.delete_activity(int(garmin_id))
             garmin_deleted = True
-            logger.info("Deleted Garmin activity %s for hevy workout %s", garmin_id, hevy_id)
+            logger.info("Deleted Garmin activity %s for workout %s", garmin_id, workout_id)
         except Exception as e:
             logger.warning("Failed to delete Garmin activity %s: %s", garmin_id, e)
 
     # Clear cached workout pages so the workouts page reflects the change
     _db = db.get_db()
     for page in range(1, 11):
-        _db.set_app_config(f"hevy_workouts_page_{page}", {})
+        _db.set_app_config(f"workouts_page_{page}", {})
 
-    logger.info("Unsynced workout %s (garmin_id=%s, garmin_deleted=%s)", hevy_id, garmin_id, garmin_deleted)
+    logger.info("Unsynced workout %s (garmin_id=%s, garmin_deleted=%s)", workout_id, garmin_id, garmin_deleted)
     return JSONResponse({"ok": True, "garmin_deleted": garmin_deleted})
 
 
@@ -1237,7 +1240,7 @@ async def api_unsync_all(request: Request):
     # Clear cached workout pages
     _db = db.get_db()
     for page in range(1, 11):
-        _db.set_app_config(f"hevy_workouts_page_{page}", {})
+        _db.set_app_config(f"workouts_page_{page}", {})
 
     logger.info("Unsynced all %d workouts", count)
     return JSONResponse({"ok": True, "count": count})
@@ -1520,24 +1523,24 @@ async def _do_sync_one(request: Request):
     from fastapi.responses import JSONResponse
 
     config = load_config()
-    hevy_api_key = config.get("hevy_api_key")
+    liftosaur_api_key = config.get("liftosaur_api_key")
 
-    if not hevy_api_key:
-        return JSONResponse({"error": "Hevy API key not configured"}, status_code=400)
+    if not liftosaur_api_key:
+        return JSONResponse({"error": "Liftosaur API key not configured"}, status_code=400)
 
-    from liftosaur2garmin.hevy import HevyClient
+    from liftosaur2garmin.liftosaur import LiftosaurAuthError, LiftosaurClient
     from liftosaur2garmin.garmin import get_client, upload_fit, rename_activity, set_description, generate_description
     from liftosaur2garmin.fit import generate_fit
     from liftosaur2garmin.sync import update_existing_activity_sets
     import tempfile
 
-    hevy = HevyClient(api_key=hevy_api_key)
+    client = LiftosaurClient(api_key=liftosaur_api_key)
 
     # Find first unsynced workout, paginating through recent history
-    total_count = hevy.get_workout_count()
+    total_count = client.get_workout_count()
     # Cache total for dashboard
     _db = db.get_db()
-    _db.set_app_config("hevy_total", {"count": total_count})
+    _db.set_app_config("workout_total", {"count": total_count})
     synced_count = db.get_synced_count()
     remaining = max(0, total_count - synced_count)
 
@@ -1546,13 +1549,13 @@ async def _do_sync_one(request: Request):
     page = 1
     max_pages = min(10, (remaining // 10) + 2)  # Don't search forever
     while page <= max_pages:
-        data = hevy.get_workouts(page=page, page_size=10)
+        data = client.get_workouts(page=page, page_size=10)
         workouts = data.get("workouts", [])
         if not workouts:
             break
         # Refresh the workouts-page cache while we already have the data
         _db.set_app_config(
-            f"hevy_workouts_page_{page}",
+            f"workouts_page_{page}",
             {"workouts": workouts, "page_count": data.get("page_count", 1)},
         )
         for w in workouts:
@@ -1613,24 +1616,23 @@ async def _do_sync_one(request: Request):
                     set_description(garmin_client, aid, desc)
 
         db.mark_synced(
-            hevy_id=unsynced["id"],
+            workout_id=unsynced["id"],
             garmin_activity_id=str(aid) if aid else None,
             title=unsynced["title"],
             calories=result.get("calories"),
             avg_hr=result.get("avg_hr"),
-            hevy_updated_at=unsynced.get("updated_at"),
+            source_updated_at=unsynced.get("updated_at"),
         )
 
-        remaining = hevy.get_workout_count() - db.get_synced_count()
+        remaining = client.get_workout_count() - db.get_synced_count()
         return JSONResponse({"synced": 1, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
     except Exception as e:
         logger.error("Sync failed for %s: %s", unsynced.get("title", "?"), str(e)[:300])
         err = str(e)
 
-        # Hevy API key invalid — hard stop, point to setup
-        from liftosaur2garmin.hevy import HevyAuthError
-        if isinstance(e, HevyAuthError):
-            return JSONResponse({"synced": 0, "error": "Hevy API key is invalid or expired. Go to Setup to enter a new key.", "remaining": -1, "done": False}, status_code=401)
+        # Liftosaur API key invalid — hard stop, point to setup
+        if isinstance(e, LiftosaurAuthError):
+            return JSONResponse({"synced": 0, "error": "Liftosaur API key is invalid or expired. Go to Setup to enter a new key.", "remaining": -1, "done": False}, status_code=401)
 
         # Auth errors are hard stops — user needs to reconnect
         if "Login failed" in err or "OAuth" in err or "token" in err:
@@ -1648,7 +1650,7 @@ async def _do_sync_one(request: Request):
         # Other upload errors — skip this workout for now, don't mark as synced
         # Track in-memory so we don't retry it in the same sync session
         _failed_ids.add(unsynced["id"])
-        remaining = hevy.get_workout_count() - db.get_synced_count() - len(_failed_ids)
+        remaining = client.get_workout_count() - db.get_synced_count() - len(_failed_ids)
         logger.warning("Skipping failed workout %s (will retry next session), %d remaining", unsynced["title"], remaining)
         return JSONResponse({"synced": 0, "skipped_error": True, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
 

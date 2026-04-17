@@ -64,32 +64,32 @@ def reset() -> None:
 # These accept **kw to silently swallow the old db_path= keyword argument.
 
 
-def is_synced(hevy_id: str, **kw) -> bool:
-    """Check if a Hevy workout has already been synced."""
-    return get_db().is_synced(hevy_id)
+def is_synced(workout_id: str, **kw) -> bool:
+    """Check if a workout has already been synced."""
+    return get_db().is_synced(workout_id)
 
 
-def get_garmin_id(hevy_id: str, **kw) -> str | None:
+def get_garmin_id(workout_id: str, **kw) -> str | None:
     """Get the Garmin activity ID for a synced workout."""
-    return get_db().get_garmin_id(hevy_id)
+    return get_db().get_garmin_id(workout_id)
 
 
 def mark_synced(
-    hevy_id: str,
+    workout_id: str,
     garmin_activity_id: str | None = None,
     title: str = "",
     calories: int | None = None,
     avg_hr: int | None = None,
-    hevy_updated_at: str | None = None,
+    source_updated_at: str | None = None,
     **kw,
 ) -> None:
     """Record a successfully synced workout."""
-    return get_db().mark_synced(hevy_id, garmin_activity_id, title, calories, avg_hr, hevy_updated_at)
+    return get_db().mark_synced(workout_id, garmin_activity_id, title, calories, avg_hr, source_updated_at)
 
 
-def unsync(hevy_id: str, **kw) -> bool:
+def unsync(workout_id: str, **kw) -> bool:
     """Remove a sync record. Returns True if a record was deleted."""
-    return get_db().unsync(hevy_id)
+    return get_db().unsync(workout_id)
 
 
 def unsync_all(**kw) -> int:
@@ -123,11 +123,11 @@ def get_sync_log(limit: int = 20, **kw) -> list[dict]:
     return get_db().get_sync_log(limit)
 
 
-def get_cached_hr(hevy_id: str, **kw) -> dict | None:
+def get_cached_hr(workout_id: str, **kw) -> dict | None:
     """Get cached HR data for a workout. Returns None if not cached."""
-    return get_db().get_cached_hr(hevy_id)
+    return get_db().get_cached_hr(workout_id)
 
 
-def cache_hr(hevy_id: str, data: dict, **kw) -> None:
+def cache_hr(workout_id: str, data: dict, **kw) -> None:
     """Cache HR data for a workout."""
-    return get_db().cache_hr(hevy_id, data)
+    return get_db().cache_hr(workout_id, data)

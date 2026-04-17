@@ -21,7 +21,7 @@ from liftosaur2garmin.garmin import (
     update_exercise_sets,
     upload_fit,
 )
-from liftosaur2garmin.hevy import HevyClient
+from liftosaur2garmin.liftosaur import LiftosaurClient
 from liftosaur2garmin.mapper import lookup_exercise
 
 logger = logging.getLogger("liftosaur2garmin")
@@ -208,7 +208,7 @@ def update_existing_activity_sets(garmin_client, activity_id: int, workout: dict
 
 
 def fetch_workouts(
-    hevy: HevyClient,
+    client: LiftosaurClient,
     limit: int | None = None,
     since: str | None = None,
     fetch_all: bool = False,
@@ -216,13 +216,13 @@ def fetch_workouts(
     """Fetch workouts with optional limit, date filter, or full history.
 
     Args:
-        hevy: Source client instance.
+        client: Source client instance.
         limit: Max workouts to fetch (None = use default or all).
         since: ISO date string — stop fetching at this date.
         fetch_all: If True, paginate through entire history.
     """
     if not fetch_all and limit and limit <= 10:
-        data = hevy.get_workouts(page=1, page_size=limit)
+        data = client.get_workouts(page=1, page_size=limit)
         return data.get("workouts", [])[:limit]
 
     all_workouts: list[dict] = []
@@ -231,7 +231,7 @@ def fetch_workouts(
         page_size = min(10, limit - len(all_workouts)) if limit else 10
         if page_size <= 0:
             break
-        data = hevy.get_workouts(page=page, page_size=page_size)
+        data = client.get_workouts(page=page, page_size=page_size)
         workouts = data.get("workouts", [])
         if not workouts:
             break
@@ -272,12 +272,7 @@ def sync(
         Dict with sync stats: synced, skipped, failed, total, unmapped.
     """
     cfg = config or load_config()
-    hevy_api_key = (
-        overrides.get("liftosaur_api_key")
-        or overrides.get("hevy_api_key")
-        or cfg.get("liftosaur_api_key")
-        or cfg.get("hevy_api_key")
-    )
+    liftosaur_api_key = overrides.get("liftosaur_api_key") or cfg.get("liftosaur_api_key")
     garmin_email = overrides.get("garmin_email") or cfg.get("garmin_email")
     garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
     garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
@@ -287,11 +282,11 @@ def sync(
     if not limit and not fetch_all and not since:
         limit = cfg.get("sync", {}).get("default_limit", 10)
 
-    hevy = HevyClient(api_key=hevy_api_key)
-    total_count = hevy.get_workout_count()
-    logger.info("Hevy reports %d total workouts", total_count)
+    client = LiftosaurClient(api_key=liftosaur_api_key)
+    total_count = client.get_workout_count()
+    logger.info("Liftosaur reports %d total workouts", total_count)
 
-    workouts = fetch_workouts(hevy, limit=limit, since=since, fetch_all=fetch_all)
+    workouts = fetch_workouts(client, limit=limit, since=since, fetch_all=fetch_all)
     logger.info("Fetched %d workouts to process", len(workouts))
 
     garmin_client = None
@@ -355,12 +350,12 @@ def sync(
                     set_description(garmin_client, activity_id, desc)
 
                 db.mark_synced(
-                    hevy_id=wid,
+                    workout_id=wid,
                     garmin_activity_id=str(activity_id) if activity_id else None,
                     title=title,
                     calories=result.get("calories"),
                     avg_hr=result.get("avg_hr"),
-                    hevy_updated_at=workout.get("updated_at"),
+                    source_updated_at=workout.get("updated_at"),
                 )
                 stats["synced"] += 1
                 logger.info("  ✓ Synced → Garmin activity %s", activity_id)

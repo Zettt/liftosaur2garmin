@@ -133,6 +133,61 @@ class TestFavicon:
         assert '<link rel="alternate icon" href="/favicon.ico" sizes="any">' in response.text
 
 
+class TestLiftosaurSetupApis:
+    def test_validate_liftosaur_endpoint(self, monkeypatch) -> None:
+        client = TestClient(app)
+
+        fake_client = MagicMock()
+        fake_client.get_workout_count.return_value = 12
+        monkeypatch.setattr(
+            "liftosaur2garmin.liftosaur.LiftosaurClient",
+            lambda api_key: fake_client,
+        )
+
+        response = client.get("/api/validate-liftosaur?key=test-key")
+
+        assert response.status_code == 200
+        assert response.json() == {"valid": True, "workout_count": 12}
+
+    def test_workouts_page_removes_legacy_source_link(self, monkeypatch) -> None:
+        client = TestClient(app)
+        db_mock = MagicMock()
+        db_mock.get_app_config.return_value = {
+            "workouts": [
+                {
+                    "id": "w1",
+                    "title": "Push",
+                    "start_time": "2026-04-01T20:00:00+00:00",
+                    "end_time": "2026-04-01T20:45:00+00:00",
+                    "exercises": [],
+                }
+            ],
+            "page_count": 1,
+        }
+        monkeypatch.setattr("liftosaur2garmin.server.is_configured", lambda: True, raising=False)
+        monkeypatch.setattr(
+            "liftosaur2garmin.server.load_config",
+            lambda: {
+                "liftosaur_api_key": "test-key",
+                "garmin_email": "user@example.com",
+                "user_profile": {},
+                "hr_fusion": {"enabled": False},
+            },
+            raising=False,
+        )
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_db", lambda: db_mock)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_synced_count", lambda: 0)
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_recent_synced", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_sync_log", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: None)
+        monkeypatch.setattr("liftosaur2garmin.server._has_garmin_tokens", lambda config=None: True, raising=False)
+
+        response = client.get("/workouts")
+
+        assert response.status_code == 200
+        assert "he" "vy.com/workout" not in response.text
+
+
 class TestSyncOneApi:
     def test_sync_one_uploads_when_update_existing_disabled(self, monkeypatch) -> None:
         client = TestClient(app)
@@ -144,14 +199,14 @@ class TestSyncOneApi:
             "exercises": [],
         }
         db_mock = MagicMock()
-        hevy_client = MagicMock()
-        hevy_client.get_workout_count.return_value = 1
-        hevy_client.get_workouts.return_value = {"workouts": [workout], "page_count": 1}
+        liftosaur_client = MagicMock()
+        liftosaur_client.get_workout_count.return_value = 1
+        liftosaur_client.get_workouts.return_value = {"workouts": [workout], "page_count": 1}
 
         monkeypatch.setattr(
             "liftosaur2garmin.server.load_config",
             lambda: {
-                "hevy_api_key": "hevy-key",
+                "liftosaur_api_key": "liftosaur-key",
                 "garmin_email": "user@example.com",
                 "update_existing": {"enabled": False},
             },
@@ -161,7 +216,7 @@ class TestSyncOneApi:
         monkeypatch.setattr("liftosaur2garmin.server.db.get_synced_count", lambda: 0)
         monkeypatch.setattr("liftosaur2garmin.server.db.is_synced", lambda workout_id: False)
         monkeypatch.setattr("liftosaur2garmin.server.db.mark_synced", db_mock.mark_synced)
-        monkeypatch.setattr("liftosaur2garmin.hevy.HevyClient", lambda api_key: hevy_client)
+        monkeypatch.setattr("liftosaur2garmin.liftosaur.LiftosaurClient", lambda api_key: liftosaur_client)
         monkeypatch.setattr("liftosaur2garmin.garmin.get_client", lambda email: object())
         monkeypatch.setattr(
             "liftosaur2garmin.garmin.find_activity_by_start_time",
@@ -193,16 +248,16 @@ class TestSyncOneApi:
             "exercises": [],
         }
         db_mock = MagicMock()
-        hevy_client = MagicMock()
-        hevy_client.get_workout_count.return_value = 1
-        hevy_client.get_workouts.return_value = {"workouts": [workout], "page_count": 1}
+        liftosaur_client = MagicMock()
+        liftosaur_client.get_workout_count.return_value = 1
+        liftosaur_client.get_workouts.return_value = {"workouts": [workout], "page_count": 1}
         find_calls: list[str] = []
         update_calls: list[tuple[int, dict]] = []
 
         monkeypatch.setattr(
             "liftosaur2garmin.server.load_config",
             lambda: {
-                "hevy_api_key": "hevy-key",
+                "liftosaur_api_key": "liftosaur-key",
                 "garmin_email": "user@example.com",
                 "update_existing": {"enabled": True},
             },
@@ -212,7 +267,7 @@ class TestSyncOneApi:
         monkeypatch.setattr("liftosaur2garmin.server.db.get_synced_count", lambda: 0)
         monkeypatch.setattr("liftosaur2garmin.server.db.is_synced", lambda workout_id: False)
         monkeypatch.setattr("liftosaur2garmin.server.db.mark_synced", db_mock.mark_synced)
-        monkeypatch.setattr("liftosaur2garmin.hevy.HevyClient", lambda api_key: hevy_client)
+        monkeypatch.setattr("liftosaur2garmin.liftosaur.LiftosaurClient", lambda api_key: liftosaur_client)
         monkeypatch.setattr("liftosaur2garmin.garmin.get_client", lambda email: object())
         monkeypatch.setattr(
             "liftosaur2garmin.garmin.find_activity_by_start_time",
@@ -305,7 +360,7 @@ class TestSettingsSave:
         monkeypatch.setattr(
             "liftosaur2garmin.server.load_config",
             lambda: {
-                "hevy_api_key": "old-key",
+                "liftosaur_api_key": "old-key",
                 "garmin_email": "old@example.com",
                 "user_profile": {"weight_kg": 80, "birth_year": 1990, "sex": "male", "vo2max": 45},
                 "timing": {"working_set_seconds": 40, "warmup_set_seconds": 25, "rest_between_sets_seconds": 75, "rest_between_exercises_seconds": 120},
@@ -318,7 +373,7 @@ class TestSettingsSave:
         monkeypatch.setattr("liftosaur2garmin.server.db.get_database_url", lambda: None)
 
         defaults = {
-            "hevy_api_key": "test-key",
+            "liftosaur_api_key": "test-key",
             "garmin_email": "user@example.com",
             "weight_kg": "75.5", "birth_year": "1992", "sex": "female", "vo2max": "50",
             "working_set_seconds": "35", "warmup_set_seconds": "20",
@@ -357,7 +412,7 @@ class TestSettingsSave:
     def test_saves_api_key_and_email(self, monkeypatch) -> None:
         client = TestClient(app)
         _, saved = self._post_settings(client, monkeypatch)
-        assert saved["hevy_api_key"] == "test-key"
+        assert saved["liftosaur_api_key"] == "test-key"
         assert saved["garmin_email"] == "user@example.com"
 
     def test_saves_hr_fusion(self, monkeypatch) -> None:

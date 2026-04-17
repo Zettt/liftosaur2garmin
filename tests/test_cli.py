@@ -34,7 +34,6 @@ class TestStatus:
         Test the function directly instead."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("LIFTOSAUR_API_KEY", raising=False)
-        monkeypatch.delenv("HEVY_API_KEY", raising=False)
         with patch("liftosaur2garmin.config.CONFIG_FILE", tmp_path / "nonexistent.json"):
             from liftosaur2garmin.config import is_configured
             assert is_configured() is False

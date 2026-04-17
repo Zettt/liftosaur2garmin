@@ -1,4 +1,4 @@
-"""Sync Hevy gym workouts to Garmin Connect."""
+"""Sync Liftosaur workouts to Garmin Connect."""
 
 from importlib.metadata import version, PackageNotFoundError
 
