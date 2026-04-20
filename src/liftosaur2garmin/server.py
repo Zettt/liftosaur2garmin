@@ -1246,6 +1246,18 @@ async def api_unsync_all(request: Request):
     return JSONResponse({"ok": True, "count": count})
 
 
+@app.post("/api/refresh-workouts")
+async def api_refresh_workouts():
+    """Clear the cached workout pages so the next load fetches fresh data from Liftosaur."""
+    from fastapi.responses import JSONResponse
+
+    _db = db.get_db()
+    for page in range(1, 51):
+        _db.set_app_config(f"hevy_workouts_page_{page}", {})
+    _db.set_app_config("hevy_total", {})
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/toggle-autosync", response_class=HTMLResponse)
 async def api_toggle_autosync(request: Request):
     form = await request.form()

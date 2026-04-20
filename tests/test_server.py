@@ -534,3 +534,94 @@ class TestSettingsSave:
         assert response.status_code == 200
         assert "https://worker.example" in response.text
         assert "Connect Garmin" in response.text
+
+
+class TestRefreshWorkouts:
+    """Tests for the POST /api/refresh-workouts endpoint."""
+
+    def _make_fake_db(self):
+        """Return a fake DB that tracks get/set_app_config calls."""
+        store: dict[str, object] = {}
+
+        class FakeDB:
+            def get_app_config(self, key: str):
+                return store.get(key)
+
+            def set_app_config(self, key: str, value: dict):
+                store[key] = value
+
+            def get_synced_ids(self, ids):
+                return {}
+
+            def get_stale_synced(self, workouts):
+                return []
+
+        return FakeDB(), store
+
+    def test_refresh_clears_cache(self, monkeypatch) -> None:
+        """POST /api/refresh-workouts should empty all cached workout pages."""
+        fake_db, store = self._make_fake_db()
+        # Pre-populate cache entries
+        store["hevy_workouts_page_1"] = {"workouts": [{"id": "w1"}], "page_count": 1}
+        store["hevy_workouts_page_2"] = {"workouts": [{"id": "w2"}], "page_count": 2}
+        store["hevy_total"] = {"count": 5}
+
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_db", lambda: fake_db)
+
+        client = TestClient(app)
+        response = client.post("/api/refresh-workouts")
+
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        # Cached pages should now be empty dicts
+        assert store["hevy_workouts_page_1"] == {}
+        assert store["hevy_workouts_page_2"] == {}
+        assert store["hevy_total"] == {}
+
+    def test_refresh_causes_api_fetch_on_next_load(self, monkeypatch) -> None:
+        """After refresh, the workouts page should hit the Liftosaur API instead of cache."""
+        fake_db, store = self._make_fake_db()
+        api_called = {"count": 0}
+
+        stale_workout = {
+            "id": "old-w1", "title": "Old", "start_time": "2026-04-01T10:00:00+00:00",
+            "end_time": "2026-04-01T10:30:00+00:00", "exercises": [],
+        }
+        fresh_workout = {
+            "id": "new-w1", "title": "Fresh", "start_time": "2026-04-09T10:00:00+00:00",
+            "end_time": "2026-04-09T10:30:00+00:00", "exercises": [],
+        }
+
+        # Seed cache with the stale workout
+        store["hevy_workouts_page_1"] = {"workouts": [stale_workout], "page_count": 1}
+
+        class FakeHevyClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def get_workouts(self, page=1, page_size=10):
+                api_called["count"] += 1
+                return {"workouts": [fresh_workout], "page_count": 1}
+
+        monkeypatch.setattr("liftosaur2garmin.server.db.get_db", lambda: fake_db)
+        monkeypatch.setattr("liftosaur2garmin.server.load_config", lambda: {
+            "hevy_api_key": "fake", "user_profile": {}, "hr_fusion": {"enabled": False},
+        })
+        monkeypatch.setattr("liftosaur2garmin.hevy.HevyClient", FakeHevyClient)
+
+        client = TestClient(app)
+
+        # Step 1: Load workouts page — should serve from cache (no API call)
+        resp1 = client.get("/workouts")
+        assert resp1.status_code == 200
+        assert "Old" in resp1.text
+        assert api_called["count"] == 0
+
+        # Step 2: Refresh
+        client.post("/api/refresh-workouts")
+
+        # Step 3: Load workouts page again — cache cleared, should call API
+        resp2 = client.get("/workouts")
+        assert resp2.status_code == 200
+        assert "Fresh" in resp2.text
+        assert api_called["count"] == 1

@@ -51,6 +51,7 @@
         animation: slideDown 0.15s ease;
     }
     @keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .cal-detail-grid {
         display: flex;
         flex-wrap: wrap;
@@ -81,7 +82,13 @@
 {% endif %}
 <div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
     <div>
-        <h1>Your Liftosaur Workouts</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <h1>Your Liftosaur Workouts</h1>
+            <button type="button" onclick="refreshWorkouts(this)" class="btn btn-secondary btn-sm" title="Refresh workouts from Liftosaur">
+                <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh
+            </button>
+        </div>
         <p>Recent workouts from Liftosaur with sync status and exercise details</p>
     </div>
     {% if page_count > 1 %}
@@ -318,6 +325,26 @@
 {% endif %}
 
 <script>
+async function refreshWorkouts(btn) {
+    btn.disabled = true;
+    const icon = btn.querySelector('svg');
+    if (icon) icon.style.animation = 'spin 0.8s linear infinite';
+    try {
+        const resp = await fetch('/api/refresh-workouts', { method: 'POST' });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            alert('Failed to refresh workouts');
+            btn.disabled = false;
+            if (icon) icon.style.animation = '';
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message);
+        btn.disabled = false;
+        if (icon) icon.style.animation = '';
+    }
+}
+
 const hrChartCache = {};
 
 async function loadHRChart(workoutId, summaryEl) {
