@@ -311,7 +311,7 @@ class TestSyncOneApi:
             "exercises": [],
         }
         db_mock = MagicMock()
-        hevy_client = MagicMock()
+        liftosaur_client = MagicMock()
         total_count = 1000
         searched_pages: list[int] = []
 
@@ -321,13 +321,13 @@ class TestSyncOneApi:
                 return {"workouts": [old_workout], "page_count": 100}
             return {"workouts": [recent_workout], "page_count": 100}
 
-        hevy_client.get_workout_count.return_value = total_count
-        hevy_client.get_workouts.side_effect = fake_get_workouts
+        liftosaur_client.get_workout_count.return_value = total_count
+        liftosaur_client.get_workouts.side_effect = fake_get_workouts
 
         monkeypatch.setattr(
             "liftosaur2garmin.server.load_config",
             lambda: {
-                "hevy_api_key": "hevy-key",
+                "liftosaur_api_key": "liftosaur-key",
                 "garmin_email": "user@example.com",
                 "update_existing": {"enabled": False},
             },
@@ -337,7 +337,7 @@ class TestSyncOneApi:
         monkeypatch.setattr("liftosaur2garmin.server.db.get_synced_count", lambda: 0)
         monkeypatch.setattr("liftosaur2garmin.server.db.is_synced", lambda workout_id: workout_id != "old-w1")
         monkeypatch.setattr("liftosaur2garmin.server.db.mark_synced", db_mock.mark_synced)
-        monkeypatch.setattr("liftosaur2garmin.hevy.HevyClient", lambda api_key: hevy_client)
+        monkeypatch.setattr("liftosaur2garmin.liftosaur.LiftosaurClient", lambda api_key: liftosaur_client)
         monkeypatch.setattr(
             "liftosaur2garmin.garmin.get_client",
             lambda email: (_ for _ in ()).throw(AssertionError("Garmin client should not be used when no workout is found")),
