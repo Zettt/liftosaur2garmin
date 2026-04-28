@@ -19,6 +19,13 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from liftosaur2garmin import db
+from liftosaur2garmin.auth import (
+    SESSION_COOKIE,
+    auth_enabled,
+    check_password,
+    sign_session,
+    verify_session,
+)
 from liftosaur2garmin.config import get_update_existing, is_configured, load_config, save_config
 from liftosaur2garmin.sync import sync
 
@@ -48,6 +55,7 @@ _jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape
 
 def _render(template_name: str, **ctx) -> HTMLResponse:
     t = _jinja_env.get_template(template_name)
+    ctx.setdefault("auth_enabled", auth_enabled())
     return HTMLResponse(t.render(**ctx))
 
 
@@ -372,25 +380,51 @@ async def _startup_autosync() -> None:
 
 _is_configured_cache: bool | None = None
 
+_SETUP_EXEMPT_PATHS = {
+    "/login",
+    "/setup",
+    "/api/sync-one",
+    "/api/cron/sync",
+    "/api/setup-actions",
+    "/api/validate-liftosaur",
+    "/api/garmin-ticket",
+    "/api/garmin/login/start",
+    "/api/garmin/login/finish",
+    "/api/garmin/import-token-file",
+    "/api/garmin/export-token-file",
+}
+
+_AUTH_EXEMPT_PATHS = {
+    "/login",
+    "/setup",
+    "/favicon.ico",
+    "/api/cron/sync",
+    "/api/setup-actions",
+    "/api/validate-liftosaur",
+    "/api/garmin-ticket",
+    "/api/garmin/login/start",
+    "/api/garmin/login/finish",
+    "/api/garmin/import-token-file",
+    "/api/garmin/export-token-file",
+}
+
 @app.middleware("http")
 async def check_setup(request: Request, call_next):
     global _is_configured_cache
     path = request.url.path
-    if path in (
-        "/setup",
-        "/favicon.ico",
-        "/api/sync-one",
-        "/api/cron/sync",
-        "/api/setup-actions",
-        "/api/validate-liftosaur",
-        "/api/garmin-ticket",
-        "/api/garmin/login/start",
-        "/api/garmin/login/finish",
-        "/api/garmin/import-token-file",
-        "/api/garmin/export-token-file",
-    ) \
-       or path.startswith("/static"):
+    if path == "/favicon.ico" or path.startswith("/static"):
         return await call_next(request)
+
+    if auth_enabled() and path not in _AUTH_EXEMPT_PATHS and not path.startswith("/api/cron/"):
+        if not verify_session(request.cookies.get(SESSION_COOKIE)):
+            if path.startswith("/api/"):
+                from starlette.responses import Response
+                return Response("Unauthorized", status_code=401)
+            return RedirectResponse(f"/login?next={path}")
+
+    if path in _SETUP_EXEMPT_PATHS:
+        return await call_next(request)
+
     # Cache is_configured result (set to True after first successful setup)
     if _is_configured_cache is None:
         _is_configured_cache = is_configured()
@@ -399,6 +433,47 @@ async def check_setup(request: Request, call_next):
         if not _is_configured_cache:
             return RedirectResponse("/setup")
     return await call_next(request)
+
+
+# ── Auth pages ───────────────────────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Show login form."""
+    if not auth_enabled() or verify_session(request.cookies.get(SESSION_COOKIE)):
+        return RedirectResponse("/")
+    error = request.query_params.get("error")
+    return HTMLResponse(_jinja_env.get_template("login.html").render(error=error))
+
+
+@app.post("/login")
+async def login_submit(request: Request, password: str = Form(...)):
+    """Verify password, set session cookie, and redirect."""
+    next_url = request.query_params.get("next", "/")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    if not check_password(password):
+        return HTMLResponse(
+            _jinja_env.get_template("login.html").render(error="Wrong password."),
+            status_code=401,
+        )
+    response = RedirectResponse(next_url, status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        sign_session(),
+        httponly=True,
+        samesite="strict",
+        max_age=30 * 24 * 3600,
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    """Clear session cookie and redirect to login."""
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
 
 
 # ── Pages ────────────────────────────────────────────────────────────────────
@@ -960,6 +1035,8 @@ async def api_save_mapping(request: Request):
         _db = db.get_db()
         if hasattr(_db, "save_custom_mapping"):
             _db.save_custom_mapping(exercise_name, category, subcategory)
+        from liftosaur2garmin.mapper import update_custom_mapping_cache
+        update_custom_mapping_cache(exercise_name, category, subcategory)
     else:
         from liftosaur2garmin.mapper import save_custom_mapping
         save_custom_mapping(exercise_name, category, subcategory)

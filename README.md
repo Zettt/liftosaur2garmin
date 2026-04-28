@@ -66,16 +66,20 @@ The main environment variables are:
 - `LIFTOSAUR_API_KEY`
 - `GARMIN_EMAIL`
 - `GARMIN_AUTH_WORKER_BASE_URL`
+- `L2G_PASSWORD`
 
 `GARMIN_PASSWORD` is optional. It is still accepted for direct local CLI login, but the primary flow is to connect Garmin once and reuse the saved token file.
 
 `GARMIN_AUTH_WORKER_BASE_URL` is optional. Set it on hosted deployments after you deploy the Cloudflare Worker in [worker-di](./worker-di). When it is present, the hosted setup page can connect to Garmin directly, including 2FA.
+
+`L2G_PASSWORD` is optional. When set, the dashboard requires that password before showing pages or running API actions. When unset, dashboard auth is disabled.
 
 Example:
 
 ```bash
 LIFTOSAUR_API_KEY="your-liftosaur-api-key"
 GARMIN_EMAIL="you@example.com"
+L2G_PASSWORD="choose-a-dashboard-password"
 ```
 
 If a `.env` file exists in your working directory, the app loads it automatically.
