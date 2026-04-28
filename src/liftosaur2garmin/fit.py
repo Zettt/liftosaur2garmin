@@ -69,7 +69,7 @@ def _ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
 
 
-def parse_timestamp(raw: str) -> datetime:
+def parse_timestamp(raw: str) -> datetime | None:
     """Parse ISO-8601 or Garmin space-separated timestamp to UTC datetime."""
     return _parse_timestamp(raw)
 
@@ -79,16 +79,22 @@ def calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, p
     return _calc_calories(hr_samples, duration_s, workout_year, profile)
 
 
-def _parse_timestamp(raw: str) -> datetime:
+def _parse_timestamp(raw: str | None) -> datetime | None:
     """Parse ISO-8601 or Garmin space-separated timestamp to UTC datetime."""
+    if not raw or not isinstance(raw, str):
+        return None
     cleaned = raw.strip()
-    if "T" in cleaned:
-        cleaned = cleaned.replace("Z", "+00:00")
-        return datetime.fromisoformat(cleaned)
-    else:
+    if not cleaned:
+        return None
+    try:
+        if "T" in cleaned:
+            cleaned = cleaned.replace("Z", "+00:00")
+            return datetime.fromisoformat(cleaned)
         return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=timezone.utc
         )
+    except (TypeError, ValueError):
+        return None
 
 
 def _calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, profile: dict | None = None) -> int:
@@ -151,8 +157,13 @@ def generate_fit(
     p = _get_profile(profile)
 
     # -- Resolve timing --
-    start_dt = _parse_timestamp(workout["start_time"])
-    end_dt = _parse_timestamp(workout["end_time"])
+    start_dt = _parse_timestamp(workout.get("start_time"))
+    end_dt = _parse_timestamp(workout.get("end_time"))
+    if not start_dt or not end_dt:
+        raise ValueError(
+            f"Workout '{workout.get('title', '?')}' missing valid start/end time "
+            f"(start={workout.get('start_time')!r}, end={workout.get('end_time')!r})"
+        )
     duration_s = (end_dt - start_dt).total_seconds()
 
     start_ms = _ms(start_dt)
@@ -165,6 +176,7 @@ def generate_fit(
     # -- Gather exercises and compute timing --
     exercises = workout.get("exercises", [])
     num_exercises = len(exercises)
+    total_distance_m = 0.0
 
     # Count all sets and compute ideal (unscaled) duration
     all_sets_info: list[dict] = []  # flat list of set info dicts
@@ -172,7 +184,11 @@ def generate_fit(
         sets = ex.get("sets", [])
         for s_idx, s in enumerate(sets):
             is_warmup = s.get("type", "normal") == "warmup"
-            set_dur = p["warmup_set_s"] if is_warmup else p["working_set_s"]
+            explicit_dur = s.get("duration_seconds")
+            if explicit_dur and explicit_dur > 0:
+                set_dur = float(explicit_dur)
+            else:
+                set_dur = p["warmup_set_s"] if is_warmup else p["working_set_s"]
 
             # Rest after this set (none after the very last set of the workout)
             is_last_set_of_exercise = s_idx == len(sets) - 1
@@ -293,7 +309,16 @@ def generate_fit(
 
         weight = s.get("weight_kg")
         if weight is not None:
-            active.weight = float(weight)
+            active.weight = max(0.0, float(weight))
+
+        distance = s.get("distance_meters")
+        if distance is not None and float(distance) > 0:
+            distance_m = float(distance)
+            total_distance_m += distance_m
+            dist_rec = RecordMessage()
+            dist_rec.timestamp = set_end_ms
+            dist_rec.distance = distance_m
+            timeline.append((set_end_ms, "record", dist_rec))
 
         timeline.append((set_end_ms, "set", active))
         msg_index += 1
@@ -342,6 +367,8 @@ def generate_fit(
     if hr_samples:
         lap.avg_heart_rate = round(sum(hr_samples) / len(hr_samples))
         lap.max_heart_rate = max(hr_samples)
+    if total_distance_m > 0:
+        lap.total_distance = total_distance_m
     lap.total_calories = calories
     builder.add(lap)
 
@@ -361,6 +388,8 @@ def generate_fit(
     if hr_samples:
         session.avg_heart_rate = round(sum(hr_samples) / len(hr_samples))
         session.max_heart_rate = max(hr_samples)
+    if total_distance_m > 0:
+        session.total_distance = total_distance_m
     session.total_calories = calories
     builder.add(session)
 

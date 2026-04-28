@@ -691,6 +691,13 @@ def save_custom_mapping(exercise_name: str, category: int, subcategory: int) -> 
             pass
     existing[exercise_name] = [category, subcategory]
     path.write_text(json.dumps(existing, indent=2))
+    update_custom_mapping_cache(exercise_name, category, subcategory)
+
+
+def update_custom_mapping_cache(exercise_name: str, category: int, subcategory: int) -> None:
+    """Update the in-memory custom mapping cache."""
+    global _custom_loaded
+    _custom_loaded = True
     _custom_mappings[exercise_name] = (category, subcategory)
 
 

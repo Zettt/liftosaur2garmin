@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from fit_tool.fit_file import FitFile
 from liftosaur2garmin.fit import generate_fit
 
 
@@ -127,3 +128,111 @@ class TestEdgeCases:
         result = generate_fit(workout, hr_samples=None, output_path=path, profile=sample_profile)
         assert result["exercises"] == 0
         assert result["total_sets"] == 0
+
+    def test_missing_end_time_raises_value_error(self, sample_profile: dict, tmp_path: Path) -> None:
+        workout = {
+            "id": "missing-end",
+            "title": "Missing End",
+            "start_time": "2026-04-01T20:00:00+00:00",
+            "end_time": None,
+            "exercises": [],
+        }
+
+        with pytest.raises(ValueError, match="missing valid start/end time"):
+            generate_fit(workout, hr_samples=None, output_path=str(tmp_path / "missing.fit"), profile=sample_profile)
+
+    def test_malformed_start_time_raises_value_error(self, sample_profile: dict, tmp_path: Path) -> None:
+        workout = {
+            "id": "bad-start",
+            "title": "Bad Start",
+            "start_time": 12345,
+            "end_time": "2026-04-01T20:00:00+00:00",
+            "exercises": [],
+        }
+
+        with pytest.raises(ValueError, match="missing valid start/end time"):
+            generate_fit(workout, hr_samples=None, output_path=str(tmp_path / "bad.fit"), profile=sample_profile)
+
+    def test_explicit_set_duration_is_written_to_fit(self, sample_profile: dict, tmp_path: Path) -> None:
+        workout = {
+            "id": "duration",
+            "title": "Duration",
+            "start_time": "2026-04-01T20:00:00+00:00",
+            "end_time": "2026-04-01T20:02:00+00:00",
+            "exercises": [
+                {
+                    "index": 0,
+                    "title": "Plank",
+                    "sets": [{"index": 0, "type": "normal", "duration_seconds": 120, "reps": 0}],
+                },
+            ],
+        }
+        path = str(tmp_path / "duration.fit")
+
+        generate_fit(workout, hr_samples=None, output_path=path, profile=sample_profile)
+        durations = [
+            record.message.duration
+            for record in FitFile.from_file(path).records
+            if type(record.message).__name__ == "SetMessage" and getattr(record.message, "set_type", None) == 1
+        ]
+
+        assert durations == [120.0]
+
+    def test_negative_weight_is_clamped_in_fit(self, sample_profile: dict, tmp_path: Path) -> None:
+        workout = {
+            "id": "negative",
+            "title": "Negative",
+            "start_time": "2026-04-01T20:00:00+00:00",
+            "end_time": "2026-04-01T20:05:00+00:00",
+            "exercises": [
+                {
+                    "index": 0,
+                    "title": "Bench Press (Barbell)",
+                    "sets": [{"index": 0, "type": "normal", "weight_kg": -10, "reps": 5}],
+                },
+            ],
+        }
+        path = str(tmp_path / "negative.fit")
+
+        generate_fit(workout, hr_samples=None, output_path=path, profile=sample_profile)
+        weights = [
+            record.message.weight
+            for record in FitFile.from_file(path).records
+            if type(record.message).__name__ == "SetMessage" and hasattr(record.message, "weight")
+        ]
+
+        assert weights == [0.0]
+
+    def test_cardio_distance_is_written_to_lap_or_session(self, sample_profile: dict, tmp_path: Path) -> None:
+        workout = {
+            "id": "cardio",
+            "title": "Cardio",
+            "start_time": "2026-04-01T20:00:00+00:00",
+            "end_time": "2026-04-01T20:30:00+00:00",
+            "exercises": [
+                {
+                    "index": 0,
+                    "title": "Treadmill",
+                    "sets": [
+                        {
+                            "index": 0,
+                            "type": "normal",
+                            "distance_meters": 5000,
+                            "duration_seconds": 1800,
+                            "weight_kg": None,
+                            "reps": None,
+                        },
+                    ],
+                },
+            ],
+        }
+        path = str(tmp_path / "cardio.fit")
+
+        generate_fit(workout, hr_samples=None, output_path=path, profile=sample_profile)
+        distances = [
+            record.message.total_distance
+            for record in FitFile.from_file(path).records
+            if hasattr(record.message, "total_distance") and record.message.total_distance is not None
+        ]
+
+        assert any(distance >= 5000.0 for distance in distances)

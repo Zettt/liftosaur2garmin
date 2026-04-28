@@ -91,3 +91,33 @@ class TestCustomMappings:
         m._custom_mappings.clear()
         # Should not crash when file doesn't exist
         _ensure_custom_loaded()
+
+    def test_cloud_mapping_save_updates_lookup_without_reload(self, monkeypatch) -> None:
+        import liftosaur2garmin.mapper as m
+        from liftosaur2garmin import server
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.saved: list[tuple[str, int, int]] = []
+
+            def save_custom_mapping(self, name: str, category: int, subcategory: int) -> None:
+                self.saved.append((name, category, subcategory))
+
+        fake_db = FakeDb()
+        m._custom_loaded = True
+        m._custom_mappings.clear()
+        server._is_configured_cache = True
+        monkeypatch.setattr(server.db, "get_database_url", lambda: "postgres://example")
+        monkeypatch.setattr(server.db, "get_db", lambda: fake_db)
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(server.app)
+        response = client.post(
+            "/api/mapping",
+            data={"exercise_name": "Cloud Only Exercise", "category": "7", "subcategory": "3"},
+        )
+
+        assert response.status_code == 200
+        assert fake_db.saved == [("Cloud Only Exercise", 7, 3)]
+        assert lookup_exercise("Cloud Only Exercise")[:2] == (7, 3)
